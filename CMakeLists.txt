@@ -1,0 +1,61 @@
+project(mallocMC)
+cmake_minimum_required(VERSION 2.8.5)
+
+# helper for libs and packages
+set(CMAKE_PREFIX_PATH "/usr/lib/x86_64-linux-gnu/"
+    "$ENV{CUDA_ROOT}" "$ENV{BOOST_ROOT}")
+
+
+###############################################################################
+# CUDA
+###############################################################################
+find_package(CUDA REQUIRED)
+set(CUDA_NVCC_FLAGS "-arch=sm_20;-use_fast_math;")
+set(CUDA_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/mallocMC/src/include)
+include_directories(${CUDA_INCLUDE_DIRS}/mallocMC/src/include)
+cuda_include_directories(${CUDA_INCLUDE_DIRS})
+
+OPTION(CUDA_OUTPUT_INTERMEDIATE_CODE "Output ptx code" OFF)
+if(CUDA_OUTPUT_INTERMEDIATE_CODE)
+set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};-Xptxas;-v;--keep")
+endif(CUDA_OUTPUT_INTERMEDIATE_CODE)
+
+SET(CUDA_OPTIMIZATION_TYPE "unset" CACHE STRING "CUDA Optimization")
+set_property(CACHE CUDA_OPTIMIZATION_TYPE PROPERTY STRINGS "unset;-G0;-O0;-O1;-O2;-O3")
+if(NOT ${CUDA_OPTIMIZATION_TYPE} STREQUAL  "unset")
+  set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};${CUDA_OPTIMIZATION_TYPE}")
+endif()
+
+
+###############################################################################
+# Boost
+###############################################################################
+find_package(Boost 1.48.0 REQUIRED)
+include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
+set(LIBS ${LIBS} ${Boost_LIBRARIES})
+
+# nvcc + boost 1.55 work around
+if(Boost_VERSION EQUAL 105500)
+  set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} \"-DBOOST_NOINLINE=__attribute__((noinline))\" ")
+endif(Boost_VERSION EQUAL 105500)
+
+
+###############################################################################
+# Executables
+###############################################################################
+
+cuda_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+file(GLOB SRCFILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c*") 
+
+cuda_add_executable(benchmark_1 ${SRCFILES})
+
+target_link_libraries(benchmark_1 ${LIBS})
+
+#add_custom_target(examples DEPENDS mallocMC_Example01 mallocMC_Example02 VerifyHeap)
+
+
+#target_link_libraries(mallocMC_Example01 ${LIBS})
+#target_link_libraries(mallocMC_Example02 ${LIBS})
+#target_link_libraries(VerifyHeap ${LIBS})
