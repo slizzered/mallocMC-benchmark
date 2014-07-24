@@ -28,6 +28,9 @@
 
 #include "print_machine_readable.hpp"
 #include "dout.hpp"
+#include "benchmark_1.config.hpp"
+#include "cmd_line.hpp"
+#include "macros.hpp"
 
 #include <boost/mpl/int.hpp>
 #include <boost/mpl/bool.hpp>
@@ -41,65 +44,12 @@
 
 // basic files for mallocMC
 #include <mallocMC/mallocMC_overwrites.hpp>
-#include <mallocMC/mallocMC_hostclass.hpp>
 #include <mallocMC/mallocMC_utils.hpp>
-
-// Load all available policies for mallocMC
-#include <mallocMC/CreationPolicies.hpp>
-#include <mallocMC/DistributionPolicies.hpp>
-#include <mallocMC/OOMPolicies.hpp>
-#include <mallocMC/ReservePoolPolicies.hpp>
-#include <mallocMC/AlignmentPolicies.hpp>
-    
-// get a CUDA error and print it nicely
-#define CUDA_CHECK(cmd) {cudaError_t error = cmd; \
-  if(error!=cudaSuccess){\
-    printf("<%s>:%i ",__FILE__,__LINE__);\
-    printf("[CUDA] Error: %s\n", cudaGetErrorString(error));}}
-
-// start kernel, wait for finish and check errors
-#define CUDA_CHECK_KERNEL_SYNC(...) __VA_ARGS__;CUDA_CHECK(cudaDeviceSynchronize())
 
 // each pointer in the datastructure will point to this many
 // elements of type allocElem_t
 #define ELEMS_PER_SLOT 750
 
-
-// configurate the CreationPolicy "Scatter"
-struct ScatterConfig{
-    typedef boost::mpl::int_<4096>  pagesize;
-    typedef boost::mpl::int_<8>     accessblocks;
-    typedef boost::mpl::int_<16>    regionsize;
-    typedef boost::mpl::int_<2>     wastefactor;
-    typedef boost::mpl::bool_<false> resetfreedpages;
-};
-
-struct ScatterHashParams{
-    typedef boost::mpl::int_<38183> hashingK;
-    typedef boost::mpl::int_<17497> hashingDistMP;
-    typedef boost::mpl::int_<1>     hashingDistWP;
-    typedef boost::mpl::int_<1>     hashingDistWPRel;
-};
-
-// configure the DistributionPolicy "XMallocSIMD"
-struct DistributionConfig{
-  typedef ScatterConfig::pagesize pagesize;
-};
-
-// configure the AlignmentPolicy "Shrink"
-struct AlignmentConfig{
-  typedef boost::mpl::int_<16> dataAlignment;
-};
-
-// Define a new allocator and call it ScatterAllocator
-// which resembles the behaviour of ScatterAlloc
-typedef mallocMC::Allocator< 
-  mallocMC::CreationPolicies::Scatter<ScatterConfig,ScatterHashParams>,
-  mallocMC::DistributionPolicies::XMallocSIMD<DistributionConfig>,
-  mallocMC::OOMPolicies::ReturnNull,
-  mallocMC::ReservePoolPolicies::SimpleCudaMalloc,
-  mallocMC::AlignmentPolicies::Shrink<AlignmentConfig>
-  > ScatterAllocator;
 
 MALLOCMC_SET_ALLOCATOR_TYPE(ScatterAllocator)
 
@@ -108,16 +58,6 @@ MALLOCMC_SET_ALLOCATOR_TYPE(ScatterAllocator)
 typedef unsigned long long allocElem_t;
 
 bool run_benchmark_1(const size_t, const unsigned, const bool);
-void parse_cmdline(const int, char**, size_t*, unsigned*, unsigned*, bool*);
-void print_help(char**);
-
-
-
-// define some defaults
-static const unsigned threads_default = 128;
-static const unsigned blocks_default  = 64; 
-static const size_t heapInMB_default  = 1024; // 1GB
-
 
 __global__ void dummy_kernel(){
   printf("dummy kernel ran successfully\n");
@@ -128,6 +68,8 @@ void init_kernel(unsigned threads, unsigned blocks){
   cudaDeviceSynchronize();
 }
 
+std::vector<std::pair<std::string,std::string> > machine_output;
+
 int main(int argc, char** argv){
   bool correct          = false;
   bool machine_readable = false;
@@ -135,25 +77,27 @@ int main(int argc, char** argv){
   unsigned threads      = threads_default;
   unsigned blocks       = blocks_default;
 
-  std::vector<std::pair<std::string,std::string> > machine_output;
-  machine_output.push_back(MK_STRINGPAIR(ScatterConfig::pagesize::value));
-  print_machine_readable(machine_output);
 
   parse_cmdline(argc, argv, &heapInMB, &threads, &blocks, &machine_readable);
 
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, 0);
 
-
-  cudaSetDevice(0);
-
-  init_kernel(threads, blocks);
-
   if( deviceProp.major < 2 ) {
     std::cerr << "Error: Compute Capability >= 2.0 required. (is ";
     std::cerr << deviceProp.major << "."<< deviceProp.minor << ")" << std::endl;
-    //return 1;
+    return 1;
   }
+
+  cudaSetDevice(0);
+
+  machine_output.push_back(MK_STRINGPAIR(deviceProp.major));
+  machine_output.push_back(MK_STRINGPAIR(deviceProp.minor));
+  machine_output.push_back(MK_STRINGPAIR(deviceProp.name));
+  machine_output.push_back(MK_STRINGPAIR(deviceProp.totalGlobalMem));
+
+
+  init_kernel(threads, blocks);
 
   correct = run_benchmark_1(heapInMB, threads, machine_readable);
 
@@ -168,111 +112,6 @@ int main(int argc, char** argv){
       return 1;
     }
   }
-}
-
-
-/**
- * will parse command line arguments
- *
- * for more details, see print_help()
- *
- * @param argc argc from main()
- * @param argv argv from main()
- * @param heapInMP will be filled with the heapsize, if given as a parameter
- * @param threads will be filled with number of threads, if given as a parameter
- * @param blocks will be filled with number of blocks, if given as a parameter
- */
-void parse_cmdline(
-    const int argc,
-    char**argv,
-    size_t *heapInMB,
-    unsigned *threads,
-    unsigned *blocks,
-    bool *machine_readable
-    ){
-
-  std::vector<std::pair<std::string, std::string> > parameters;
-
-  // Parse Commandline, tokens are shaped like ARG=PARAM or ARG
-  // This requires to use '=', if you want to supply a value with a parameter
-  for (int i = 1; i < argc; ++i) {
-    char* pos = strtok(argv[i], "=");
-    std::pair < std::string, std::string > p(std::string(pos), std::string(""));
-    pos = strtok(NULL, "=");
-    if (pos != NULL) {
-      p.second = std::string(pos);
-    }
-    parameters.push_back(p);
-  }
-
-  // go through all parameters that were found
-  for (unsigned i = 0; i < parameters.size(); ++i) {
-    std::pair < std::string, std::string > p = parameters.at(i);
-
-    if (p.first == "-v" || p.first == "--verbose") {
-      verbose = true;
-    }
-
-    if (p.first == "--threads") {
-      *threads = atoi(p.second.c_str());
-    }
-
-    if (p.first == "--blocks") {
-      *blocks = atoi(p.second.c_str());
-    }
-
-    if(p.first == "--heapsize") {
-      *heapInMB = size_t(atoi(p.second.c_str()));
-    }
-
-    if(p.first == "-h" || p.first == "--help"){
-      print_help(argv);
-      exit(0);
-    }
-
-    if(p.first == "-m" || p.first == "--machine_readable"){
-      *machine_readable = true;
-    }
-  }
-}
-
-
-/**
- * prints a helpful message about program use
- *
- * @param argv the argv-parameter from main, used to find the program name
- */
-void print_help(char** argv){
-  std::stringstream s;
-
-  s << "SYNOPSIS:"                                              << std::endl;
-  s << argv[0] << " [OPTIONS]"                                  << std::endl;
-  s << ""                                                       << std::endl;
-  s << "OPTIONS:"                                               << std::endl;
-  s << "  -h, --help"                                           << std::endl;
-  s << "    Print this help message and exit"                   << std::endl;
-  s << ""                                                       << std::endl;
-  s << "  -v, --verbose"                                        << std::endl;
-  s << "    Print information about parameters and progress"    << std::endl;
-  s << ""                                                       << std::endl;
-  s << "  -m, --machine_readable"                               << std::endl;
-  s << "    Print all relevant parameters as CSV. This will"    << std::endl;
-  s << "    suppress all other output unless explicitly"        << std::endl;
-  s << "    requested with --verbose or -v"                     << std::endl;
-  s << ""                                                       << std::endl;
-  s << "  --threads=N"                                          << std::endl;
-  s << "    Set the number of threads per block (default "                  ;
-  s <<                               threads_default << "128)"  << std::endl;
-  s << ""                                                       << std::endl;
-  s << "  --blocks=N"                                           << std::endl;
-  s << "    Set the number of blocks in the grid (default "                 ;
-  s <<                                   blocks_default << ")"  << std::endl;
-  s << ""                                                       << std::endl;
-  s << "  --heapsize=N"                                         << std::endl;
-  s << "    Set the heapsize to N Megabyte (default "                       ;
-  s <<                         heapInMB_default << "1024)"      << std::endl;
-
-  std::cout << s.str();
 }
 
 
@@ -350,7 +189,7 @@ __global__ void createPointerStorageInThreads(
   int id = threadIdx.x + blockIdx.x * blockDim.x;
   if(id > desiredThreads) return;
   size_t* p = (size_t*) malloc(sizeof(size_t) * maxStorageSize);
-  if(p == NULL) atomicAnd(&globalSuccess, 0);
+//if(p == NULL) atomicAnd(&globalSuccess, 0);
   pointerStore[id] = p;
   fillLevelsPerThread[id] = 0;
 }
@@ -452,13 +291,14 @@ bool run_benchmark_1(
     const bool machine_readable
     ){
 
+  int h_globalSuccess=4;
 
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, 0);
 
   unsigned maxBlocksPerSM = 8;
   if(deviceProp.major > 2) maxBlocksPerSM *= 2; //set to 16 for 3.0 and higher
-  if(deviceProp.major > 3) maxBlocksPerSM *= 2; //increase again to 32 for 5.0 and higher
+  if(deviceProp.major >= 5) maxBlocksPerSM *= 2; //increase again to 32 for 5.0 and higher
 
   //use the smallest possible blocksize that is still able to fill the multiprocessor
   const size_t threadsUsedInBlock = deviceProp.maxThreadsPerMultiProcessor / maxBlocksPerSM;
@@ -473,6 +313,7 @@ bool run_benchmark_1(
   if(heapMB > usableMemoryMB/2) dout() << "Warning: heapSize fills more than 50% of global Memory" << std::endl;
 
   const size_t heapSize         = size_t(1024U*1024U) * heapMB;
+  machine_output.push_back(MK_STRINGPAIR(heapSize));
 
   size_t** pointerStoreForThreads;
   int* fillLevelsPerThread;
@@ -490,13 +331,6 @@ bool run_benchmark_1(
       desiredThreads,
       fillLevelsPerThread
       );
-
-
-
-
-
-
-
 
 
   bool correct                  = true;
@@ -525,7 +359,6 @@ bool run_benchmark_1(
 
   dout() << "done "<< std::endl;
 
-  std::vector<std::pair<std::string,std::string> > machine_output;
   machine_output.push_back(MK_STRINGPAIR(desiredThreads));
   machine_output.push_back(MK_STRINGPAIR(ScatterConfig::pagesize::value));
   machine_output.push_back(MK_STRINGPAIR(ScatterConfig::accessblocks::value));
@@ -536,6 +369,9 @@ bool run_benchmark_1(
   machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistMP::value));
   machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWP::value));
   machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWPRel::value));
+
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&h_globalSuccess,(int*) &globalSuccess, sizeof(int), cudaMemcpyDeviceToHost));
+  machine_output.push_back(MK_STRINGPAIR(h_globalSuccess));
 
   print_machine_readable(machine_output);
 
