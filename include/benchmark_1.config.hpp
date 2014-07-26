@@ -43,6 +43,7 @@ struct AlignmentConfig{
 typedef mallocMC::Allocator<
 mallocMC::CreationPolicies::Scatter<ScatterConfig,ScatterHashParams>,
   mallocMC::DistributionPolicies::XMallocSIMD<DistributionConfig>,
+  //mallocMC::DistributionPolicies::Noop,
   mallocMC::OOMPolicies::ReturnNull,
   mallocMC::ReservePoolPolicies::SimpleCudaMalloc,
   mallocMC::AlignmentPolicies::Shrink<AlignmentConfig>

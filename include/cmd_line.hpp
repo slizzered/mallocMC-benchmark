@@ -7,8 +7,8 @@
 
 // define some defaults
 static const unsigned threads_default = 128;
-static const unsigned blocks_default  = 64; 
-static const size_t heapInMB_default  = 1024; // 1GB
+static const unsigned blocks_default  = 1; 
+static const size_t heapInMB_default  = 16; // 1GB
 
 
 

@@ -8,8 +8,7 @@
   Author(s):  Carlchristian Eckert - c.eckert ( at ) hzdr.de
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
-  of this software and associated documentation files (the "Software"), to deal
-  in the Software without restriction, including without limitation the rights
+  of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights
   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
   copies of the Software, and to permit persons to whom the Software is
   furnished to do so, subject to the following conditions:
@@ -41,6 +40,7 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <curand_kernel.h>
 
 // basic files for mallocMC
 #include <mallocMC/mallocMC_overwrites.hpp>
@@ -115,159 +115,83 @@ int main(int argc, char** argv){
 }
 
 
-__global__ void check_content(
-    allocElem_t** data,
-    unsigned long long *counter,
-    unsigned long long* globalSum,
-    const size_t nSlots,
-    int* correct
-    ){
-
-  unsigned long long sum=0;
-  while(true){
-    size_t pos = atomicAdd(counter,1);
-    if(pos >= nSlots){break;}
-    const size_t offset = pos*ELEMS_PER_SLOT;
-    for(size_t i=0;i<ELEMS_PER_SLOT;++i){
-      if (static_cast<allocElem_t>(data[pos][i]) != static_cast<allocElem_t>(offset+i)){
-        atomicAnd(correct,0);
-      }
-      sum += static_cast<unsigned long long>(data[pos][i]);
-    }
-  }
-  atomicAdd(globalSum,sum);
-}
-
-
-
-/**
- * allocate a lot of small arrays and fill them
- *
- * Each array has the size ELEMS_PER_SLOT and the type allocElem_t.
- * Each element will be filled with a number that is related to its
- * position in the datastructure.
- *
- * @param data the datastructure to allocate
- * @param counter should be initialized with 0 and will
- *        hold, how many allocations were done
- * @param globalSum will hold the sum of all values over all
- *        allocated structures (for verification purposes)
- */
-__global__ void allocAll(
-    allocElem_t** data,
-    unsigned long long* counter,
-    unsigned long long* globalSum
-    ){
-
-  unsigned long long sum=0;
-  while(true){
-    allocElem_t* p = (allocElem_t*) mallocMC::malloc(sizeof(allocElem_t) * ELEMS_PER_SLOT);
-    if(p == NULL) break;
-
-    size_t pos = atomicAdd(counter,1);
-    const size_t offset = pos*ELEMS_PER_SLOT;
-    for(size_t i=0;i<ELEMS_PER_SLOT;++i){
-      p[i] = static_cast<allocElem_t>(offset + i);
-      sum += static_cast<unsigned long long>(p[i]);
-    }
-    data[pos] = p;
-  }
-
-  atomicAdd(globalSum,sum);
-}
 
 __device__ int globalSuccess = 1;
 
 __global__ void createPointerStorageInThreads(
-    size_t** pointerStore,
-    size_t maxStorageSize,
+    int*** pointerStore,
+    size_t maxPointersPerThread,
     int desiredThreads,
-    int* fillLevelsPerThread
+    int* fillLevelsPerThread,
+    int* pointersPerThread,
+    curandState_t* randomState,
+    int seed
     ){
   
 
   int id = threadIdx.x + blockIdx.x * blockDim.x;
-  if(id > desiredThreads) return;
-  size_t* p = (size_t*) malloc(sizeof(size_t) * maxStorageSize);
-//if(p == NULL) atomicAnd(&globalSuccess, 0);
+  if(id >= desiredThreads) return;
+  int** p = (int**) malloc(sizeof(int*) * maxPointersPerThread);
+  if(p == NULL) atomicAnd(&globalSuccess, 0);
   pointerStore[id] = p;
   fillLevelsPerThread[id] = 0;
+  pointersPerThread[id] = 0;
+  curand_init(seed, id, 0, &randomState[id]);
+  
 }
 
 __global__ void initialFillingOfPointerStorage(
-    size_t** pointerStore,
-    size_t maxStorageSize,
+    int*** pointerStore,
+    int maxBytesPerThread,
     int desiredThreads,
-    int* fillLevelsPerThread
+    int* fillLevelsPerThread,
+    int* pointersPerThread,
+    curandState_t* randomState
     ){
+    
+  int id = threadIdx.x + blockIdx.x * blockDim.x;
+  if(id >= desiredThreads) return;
 
-}
+  int fillLevel = fillLevelsPerThread[id];
+  int** pointerStoreReg = pointerStore[id];
+  int pointersPerThreadReg = pointersPerThread[id];
+  int counter = 0;
 
-/**
- * free all the values again
- *
- * @param data the datastructure to free
- * @param counter should be an empty space on device memory,
- *        counts how many elements were freed
- * @param max the maximum number of elements to free
- */
-__global__ void deallocAll(
-    allocElem_t** data,
-    unsigned long long* counter,
-    const size_t nSlots
-    ){
 
-  while(true){
-    size_t pos = atomicAdd(counter,1);
-    if(pos >= nSlots) break;
-    mallocMC::free(data[pos]);
+  while(fillLevel+128 < maxBytesPerThread && counter < 5000){
+    const float probability = min(curand_uniform(&randomState[id])+0.25,1.);
+    const float fillLevelPercent = float(fillLevel) / maxBytesPerThread;
+    if(pointersPerThreadReg > 0 && probability <= fillLevelPercent) { //probably, the fill level is higher than 75% -> deallocate
+        int free_size = pointerStoreReg[pointersPerThreadReg][0];
+        printf("thread %d wants to free %d bytes of memory\n",id, free_size);
+        mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
+        fillLevel -= free_size;
+    }else{ 
+      const int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
+      const int alloc_size = 16 << multiplier;
+      printf("thread %d wants to allocate %d bytes (%d slots remaining)\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
+      pointerStoreReg[++pointersPerThreadReg] = (int*) mallocMC::malloc(alloc_size);
+      if(pointerStoreReg[pointersPerThreadReg] == NULL){
+        printf("thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
+        break;
+      }
+      pointerStoreReg[pointersPerThreadReg][0] = alloc_size;
+      fillLevel += alloc_size;
+    }
+    ++counter;
   }
+
+  printf("Thread %d  fillLevel: %d byte (%.0f%%) maxBytesPerThread: %d allocatedElements: %d\n",id, fillLevel, 100*float(fillLevel)/maxBytesPerThread,maxBytesPerThread, pointersPerThreadReg);
+
+  fillLevelsPerThread[id] = fillLevel;
+  pointerStore[id] = pointerStoreReg;
+  pointersPerThread[id] = pointersPerThreadReg;
+
 }
 
-
-
-/**
- * wrapper function to allocate memory on device
- *
- * allocates memory with mallocMC. Returns the number of
- * created elements as well as the sum of these elements
- *
- * @param d_testData the datastructure which will hold
- *        pointers to the created elements
- * @param h_nSlots will be filled with the number of elements
- *        that were allocated
- * @param h_sum will be filled with the sum of all elements created
- * @param blocks the size of the CUDA grid
- * @param threads the number of CUDA threads per block
- */
-void allocate(
-    allocElem_t** d_testData,
-    unsigned long long* h_nSlots,
-    unsigned long long* h_sum,
-    const unsigned blocks,
-    const unsigned threads
-    ){
-
-  dout() << "allocating on device...";
-
-  unsigned long long zero = 0;
-  unsigned long long *d_sum;
-  unsigned long long *d_nSlots;
-
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &d_sum,sizeof(unsigned long long)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &d_nSlots, sizeof(unsigned long long)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(d_sum,&zero,sizeof(unsigned long long),cudaMemcpyHostToDevice));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(d_nSlots,&zero,sizeof(unsigned long long),cudaMemcpyHostToDevice));
-
-  CUDA_CHECK_KERNEL_SYNC(allocAll<<<blocks,threads>>>(d_testData,d_nSlots,d_sum));
-
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(h_sum,d_sum,sizeof(unsigned long long),cudaMemcpyDeviceToHost));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(h_nSlots,d_nSlots,sizeof(unsigned long long),cudaMemcpyDeviceToHost));
-  cudaFree(d_sum);
-  cudaFree(d_nSlots);
-  dout() << "done" << std::endl;
+__global__ void getSuccessState(int* success){
+  success[0] = globalSuccess;
 }
-
 
 
 
@@ -291,7 +215,7 @@ bool run_benchmark_1(
     const bool machine_readable
     ){
 
-  int h_globalSuccess=4;
+  int h_globalSuccess=-1;
 
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, 0);
@@ -306,8 +230,8 @@ bool run_benchmark_1(
   dout() << "threadsUsedInBlock: " << threadsUsedInBlock << std::endl;
   dout() << "maxUsefulBlocks: " << maxUsefulBlocks << std::endl;
   
-  unsigned threads = threadsUsedInBlock;
-  unsigned blocks  = maxUsefulBlocks;
+  const unsigned threads = threadsUsedInBlock;
+  const unsigned blocks  = maxUsefulBlocks;
 
   const size_t usableMemoryMB   = deviceProp.totalGlobalMem / size_t(1024U * 1024U);
   if(heapMB > usableMemoryMB/2) dout() << "Warning: heapSize fills more than 50% of global Memory" << std::endl;
@@ -315,42 +239,59 @@ bool run_benchmark_1(
   const size_t heapSize         = size_t(1024U*1024U) * heapMB;
   machine_output.push_back(MK_STRINGPAIR(heapSize));
 
-  size_t** pointerStoreForThreads;
+  //if a single thread allocates only the minimal chunksize, it can not exceed this number
+  size_t maxStoredChunks = heapMB * size_t(1024U * 1024U) / size_t(16U);
+  size_t maxMemPerThread = heapMB * size_t(1024U * 1024U) / desiredThreads;
+  int maxChunksPerThread = maxMemPerThread / 16;
+  int maxChunksTotal = maxChunksPerThread * desiredThreads;
+  size_t maxMemTotal = maxMemPerThread * desiredThreads;
+
+  int*** pointerStoreForThreads;
   int* fillLevelsPerThread;
+  int* pointersPerThread;
+  curandState_t* randomState;
   MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointerStoreForThreads, desiredThreads*sizeof(allocElem_t*)));
   MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &fillLevelsPerThread, sizeof(int)));
-
-  //if a single thread allocates only the minimal chunksize, it can not exceed this number
-  size_t maxStorageSize = heapMB * size_t(1024U * 1024U) / size_t(16U);
-
-  createPointerStorageInThreads<<<blocks,threads>>>(pointerStoreForThreads,maxStorageSize,desiredThreads,fillLevelsPerThread);
-
-  initialFillingOfPointerStorage<<<blocks,threads,sizeof(int)*threads>>>(
-      pointerStoreForThreads,
-      maxStorageSize,
-      desiredThreads,
-      fillLevelsPerThread
-      );
-
-
-  bool correct                  = true;
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, sizeof(int)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
 
   // initializing the heap
-  mallocMC::initHeap(heapSize);
+  mallocMC::initHeap(heapSize*100);
 
 
+  //dout() << "maxStoredChunks: " << maxStoredChunks << std::endl;
+  size_t completeStorage = maxMemTotal + maxChunksTotal*sizeof(int*);
+  dout() << "necessary memory for malloc on device: " << completeStorage << std::endl;
 
-  // verifying on device
-  //correct = correct && verify(d_testData,usedSlots,blocks,threads);
+  cudaDeviceSetLimit(cudaLimitMallocHeapSize,completeStorage*2);
 
-  // damaging one cell
-  dout() << "damaging of element... ";
-  //CUDA_CHECK_KERNEL_SYNC(damageElement<<<1,1>>>(d_testData));
-  dout() << "done" << std::endl;
+  size_t maxPointersPerThread = ceil(float(maxStoredChunks)/desiredThreads);
+  CUDA_CHECK_KERNEL_SYNC(createPointerStorageInThreads<<<blocks,threads>>>(
+      pointerStoreForThreads,
+      maxChunksPerThread,
+      desiredThreads,
+      fillLevelsPerThread,
+      pointersPerThread,
+      randomState,
+      42
+      ));
 
-  // verifying on device
-  // THIS SHOULD FAIL (damage was done before!). Therefore, we must inverse the logic
-  //correct = correct && !verify(d_testData,usedSlots,blocks,threads);
+  //each thread can handle up to ceil(float(maxStoredChunks)/desiredThreads)
+  //pointers. 
+  //However, if the chunks are bigger than 16byte, the heap-size is far more limiting.
+  // It is therefore preferable to supply the maximum allowed memory for each
+  // thread and assume, that the thread will not exceed it's pointer-space
+  CUDA_CHECK_KERNEL_SYNC(initialFillingOfPointerStorage<<<blocks,threads,sizeof(int)*threads>>>(
+      pointerStoreForThreads,
+      maxMemPerThread,
+      desiredThreads,
+      fillLevelsPerThread,
+      pointersPerThread,
+      randomState
+      ));
+  cudaDeviceSynchronize();
+
+
 
 
   // release all memory
@@ -370,10 +311,16 @@ bool run_benchmark_1(
   machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWP::value));
   machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWPRel::value));
 
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&h_globalSuccess,(int*) &globalSuccess, sizeof(int), cudaMemcpyDeviceToHost));
+  int* d_success;
+  cudaMalloc((void**) &d_success,sizeof(int));
+  getSuccessState<<<1,1>>>(d_success);
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy((void*) &h_globalSuccess,d_success, sizeof(int), cudaMemcpyDeviceToHost));
+  print_machine_readable(machine_output);
+  cudaFree(d_success);
+  cudaFree(pointerStoreForThreads);
+  cudaFree(fillLevelsPerThread);
+
   machine_output.push_back(MK_STRINGPAIR(h_globalSuccess));
 
-  print_machine_readable(machine_output);
-
-  return correct;
+  return h_globalSuccess;
 }
