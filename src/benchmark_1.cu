@@ -165,7 +165,7 @@ __global__ void initialFillingOfPointerStorage(
       //const int alloc_size = 128 << multiplier;
       const int alloc_size = 128;
       //printf("thread %d wants to allocate %d bytes (%d slots remaining)\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
-      pointerStoreReg[++pointersPerThreadReg] = (int*) malloc(alloc_size);
+      pointerStoreReg[++pointersPerThreadReg] = (int*) mallocMC::malloc(alloc_size);
       if(pointerStoreReg[pointersPerThreadReg] == NULL){
         printf("thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
         break;
@@ -207,7 +207,7 @@ __global__ void continuedFillingOfPointerStorage(
     if(pointersPerThreadReg > 0 && probability <= fillLevelPercent) { //probably, the fill level is higher than 75% -> deallocate
         int free_size = pointerStoreReg[pointersPerThreadReg][0];
         printf("thread %d wants to free %d bytes of memory\n",id, free_size);
-        free(pointerStoreReg[pointersPerThreadReg--]);
+        mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
         fillLevel -= free_size;
     }else{ 
      // const int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
@@ -215,7 +215,7 @@ __global__ void continuedFillingOfPointerStorage(
       const int alloc_size = 128;
       //printf("thread %d wants to allocate %d bytes (%d slots remaining)\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
       printf("thread %d wants to allocate %d bytes of memory\n",id, alloc_size);
-      pointerStoreReg[++pointersPerThreadReg] = (int*) malloc(alloc_size);
+      pointerStoreReg[++pointersPerThreadReg] = (int*) mallocMC::malloc(alloc_size);
       if(pointerStoreReg[pointersPerThreadReg] == NULL){
         printf("thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
         break;
@@ -295,9 +295,9 @@ bool run_benchmark_1(
   int* fillLevelsPerThread;
   int* pointersPerThread;
   curandState_t* randomState;
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointerStoreForThreads, desiredThreads*sizeof(allocElem_t*)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &fillLevelsPerThread, sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, sizeof(int)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointerStoreForThreads, desiredThreads*sizeof(int**)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &fillLevelsPerThread, desiredThreads*sizeof(int)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, desiredThreads*sizeof(int)));
   MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
 
   // initializing the heap
