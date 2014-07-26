@@ -158,19 +158,64 @@ __global__ void initialFillingOfPointerStorage(
   int counter = 0;
 
 
-  while(fillLevel+128 < maxBytesPerThread && counter < 5000){
+  float fillLevelPercent = float(fillLevel) / maxBytesPerThread;
+  while(fillLevelPercent < 0.75){
+    fillLevelPercent = float(fillLevel) / maxBytesPerThread;
+      //const int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
+      //const int alloc_size = 128 << multiplier;
+      const int alloc_size = 128;
+      //printf("thread %d wants to allocate %d bytes (%d slots remaining)\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
+      pointerStoreReg[++pointersPerThreadReg] = (int*) malloc(alloc_size);
+      if(pointerStoreReg[pointersPerThreadReg] == NULL){
+        printf("thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
+        break;
+      }
+      pointerStoreReg[pointersPerThreadReg][0] = alloc_size;
+      fillLevel += alloc_size;
+    ++counter;
+  }
+
+  //printf("Thread %d  fillLevel: %d byte (%.0f%%) maxBytesPerThread: %d allocatedElements: %d\n",id, fillLevel, 100*float(fillLevel)/maxBytesPerThread,maxBytesPerThread, pointersPerThreadReg);
+
+  fillLevelsPerThread[id] = fillLevel;
+  pointerStore[id] = pointerStoreReg;
+  pointersPerThread[id] = pointersPerThreadReg;
+
+}
+
+__global__ void continuedFillingOfPointerStorage(
+    int*** pointerStore,
+    int maxBytesPerThread,
+    int desiredThreads,
+    int* fillLevelsPerThread,
+    int* pointersPerThread,
+    curandState_t* randomState
+    ){
+    
+  int id = threadIdx.x + blockIdx.x * blockDim.x;
+  if(id >= desiredThreads) return;
+
+  int fillLevel = fillLevelsPerThread[id];
+  int** pointerStoreReg = pointerStore[id];
+  int pointersPerThreadReg = pointersPerThread[id];
+  int counter = 0;
+
+
+  while(fillLevel+128 < maxBytesPerThread && counter < 1000){
     const float probability = min(curand_uniform(&randomState[id])+0.25,1.);
     const float fillLevelPercent = float(fillLevel) / maxBytesPerThread;
     if(pointersPerThreadReg > 0 && probability <= fillLevelPercent) { //probably, the fill level is higher than 75% -> deallocate
         int free_size = pointerStoreReg[pointersPerThreadReg][0];
         printf("thread %d wants to free %d bytes of memory\n",id, free_size);
-        mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
+        free(pointerStoreReg[pointersPerThreadReg--]);
         fillLevel -= free_size;
     }else{ 
-      const int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
-      const int alloc_size = 16 << multiplier;
-      printf("thread %d wants to allocate %d bytes (%d slots remaining)\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
-      pointerStoreReg[++pointersPerThreadReg] = (int*) mallocMC::malloc(alloc_size);
+     // const int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
+     // const int alloc_size = 16 << multiplier;
+      const int alloc_size = 128;
+      //printf("thread %d wants to allocate %d bytes (%d slots remaining)\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
+      printf("thread %d wants to allocate %d bytes of memory\n",id, alloc_size);
+      pointerStoreReg[++pointersPerThreadReg] = (int*) malloc(alloc_size);
       if(pointerStoreReg[pointersPerThreadReg] == NULL){
         printf("thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
         break;
@@ -256,12 +301,13 @@ bool run_benchmark_1(
   MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
 
   // initializing the heap
-  mallocMC::initHeap(heapSize*100);
+  mallocMC::initHeap(heapSize*2);
 
 
   //dout() << "maxStoredChunks: " << maxStoredChunks << std::endl;
   size_t completeStorage = maxMemTotal + maxChunksTotal*sizeof(int*);
   dout() << "necessary memory for malloc on device: " << completeStorage << std::endl;
+  dout() << "mallocMC Heapsize:                     " << heapSize*100 << std::endl;
 
   cudaDeviceSetLimit(cudaLimitMallocHeapSize,completeStorage*2);
 
@@ -281,7 +327,17 @@ bool run_benchmark_1(
   //However, if the chunks are bigger than 16byte, the heap-size is far more limiting.
   // It is therefore preferable to supply the maximum allowed memory for each
   // thread and assume, that the thread will not exceed it's pointer-space
-  CUDA_CHECK_KERNEL_SYNC(initialFillingOfPointerStorage<<<blocks,threads,sizeof(int)*threads>>>(
+  CUDA_CHECK_KERNEL_SYNC(initialFillingOfPointerStorage<<<blocks,threads>>>(
+      pointerStoreForThreads,
+      maxMemPerThread,
+      desiredThreads,
+      fillLevelsPerThread,
+      pointersPerThread,
+      randomState
+      ));
+  cudaDeviceSynchronize();
+
+  CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
       pointerStoreForThreads,
       maxMemPerThread,
       desiredThreads,
