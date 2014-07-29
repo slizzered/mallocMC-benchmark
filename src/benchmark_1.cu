@@ -117,6 +117,40 @@ int main(int argc, char** argv){
 
 
 __device__ int globalSuccess = 1;
+__device__ int globalAllocationsInit = 0;
+__device__ int globalAllocationsContinued = 0;
+__device__ int globalFreeContinued = 0;
+__device__ int globalFailsInit = 0;
+__device__ int globalFailsContinued = 0;
+
+__device__ int getAllocSize(const int id, curandState_t* randomState){
+  int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
+  return 16 << multiplier;
+  //return 64;
+}
+
+__device__ int* testRequestInit(int id, int alloc_size, int* p){
+  //if(p==NULL){
+  //  int slotsRemaining = mallocMC::getAvailableSlots(alloc_size);
+  //  if(slotsRemaining>0){
+  //    printf("Init: thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",
+  //        id, alloc_size, slotsRemaining);
+  //    atomicAnd(&globalSuccess,0);
+  //  }
+  //}
+  return p;
+}
+__device__ int* testRequest(int id, int alloc_size, int* p){
+  if(p==NULL){
+    int slotsRemaining = mallocMC::getAvailableSlots(alloc_size);
+    if(slotsRemaining>10){
+      printf("thread %d wants to allocate %d bytes (%u slots remaining), but did NOT get anything!\n",
+          id, alloc_size, slotsRemaining);
+      atomicAnd(&globalSuccess,0);
+    }
+  }
+  return p;
+}
 
 __global__ void createPointerStorageInThreads(
     int*** pointerStore,
@@ -127,8 +161,6 @@ __global__ void createPointerStorageInThreads(
     curandState_t* randomState,
     int seed
     ){
-  
-
   int id = threadIdx.x + blockIdx.x * blockDim.x;
   if(id >= desiredThreads) return;
   int** p = (int**) malloc(sizeof(int*) * maxPointersPerThread);
@@ -139,6 +171,7 @@ __global__ void createPointerStorageInThreads(
   curand_init(seed, id, 0, &randomState[id]);
   
 }
+
 
 __global__ void initialFillingOfPointerStorage(
     int*** pointerStore,
@@ -155,24 +188,28 @@ __global__ void initialFillingOfPointerStorage(
   int fillLevel = fillLevelsPerThread[id];
   int** pointerStoreReg = pointerStore[id];
   int pointersPerThreadReg = pointersPerThread[id];
-  int counter = 0;
 
+  while(true){
 
-  float fillLevelPercent = float(fillLevel) / maxBytesPerThread;
-  while(fillLevelPercent < 0.75){
-    fillLevelPercent = float(fillLevel) / maxBytesPerThread;
-      //const int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
-      //const int alloc_size = 128 << multiplier;
-      const int alloc_size = 128;
-      //printf("thread %d wants to allocate %d bytes (%d slots remaining)\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
-      pointerStoreReg[++pointersPerThreadReg] = (int*) mallocMC::malloc(alloc_size);
-      if(pointerStoreReg[pointersPerThreadReg] == NULL){
-        printf("thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
-        break;
-      }
-      pointerStoreReg[pointersPerThreadReg][0] = alloc_size;
+    const float fillLevelPercent = float(fillLevel) / maxBytesPerThread;
+    const int alloc_size = getAllocSize(id, randomState);
+
+    if(fillLevel+128 >= maxBytesPerThread) break;
+    if(fillLevelPercent >= 0.75) break;
+    if(mallocMC::getAvailableSlots(alloc_size) < 1) break;
+
+    int * p = (int*) mallocMC::malloc(alloc_size);
+    if(testRequestInit(id,alloc_size,p) == NULL){
+      atomicAdd(&globalFailsInit,1);
+      break;
+    }
+    else{
+      p[0] = alloc_size;
       fillLevel += alloc_size;
-    ++counter;
+      pointerStoreReg[++pointersPerThreadReg] = p;
+      atomicAdd(&globalAllocationsInit,1);
+
+    }
   }
 
   //printf("Thread %d  fillLevel: %d byte (%.0f%%) maxBytesPerThread: %d allocatedElements: %d\n",id, fillLevel, 100*float(fillLevel)/maxBytesPerThread,maxBytesPerThread, pointersPerThreadReg);
@@ -201,40 +238,79 @@ __global__ void continuedFillingOfPointerStorage(
   int counter = 0;
 
 
-  while(fillLevel+128 < maxBytesPerThread && counter < 1000){
-    const float probability = min(curand_uniform(&randomState[id])+0.25,1.);
-    const float fillLevelPercent = float(fillLevel) / maxBytesPerThread;
-    if(pointersPerThreadReg > 0 && probability <= fillLevelPercent) { //probably, the fill level is higher than 75% -> deallocate
+  while(counter < 1000){
+    ++counter;
+    float probability = min(curand_uniform(&randomState[id])+0.25,1.);
+    //float probability = max(curand_uniform(&randomState[id]), curand_uniform(&randomState[id]));
+    float fillLevelPercent = float(fillLevel) / maxBytesPerThread;
+    //probably, the fill level is higher than 75% -> deallocate
+    
+    if(pointersPerThreadReg > 0 && (probability <= fillLevelPercent)) {
+        //printf("thread %d wants to free %d bytes of memory\n",id, free_size);
         int free_size = pointerStoreReg[pointersPerThreadReg][0];
-        printf("thread %d wants to free %d bytes of memory\n",id, free_size);
         mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
         fillLevel -= free_size;
-    }else{ 
-     // const int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
-     // const int alloc_size = 16 << multiplier;
-      const int alloc_size = 128;
-      //printf("thread %d wants to allocate %d bytes (%d slots remaining)\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
-      printf("thread %d wants to allocate %d bytes of memory\n",id, alloc_size);
-      pointerStoreReg[++pointersPerThreadReg] = (int*) mallocMC::malloc(alloc_size);
-      if(pointerStoreReg[pointersPerThreadReg] == NULL){
-        printf("thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",id, alloc_size, mallocMC::getAvailableSlots(alloc_size));
-        break;
-      }
-      pointerStoreReg[pointersPerThreadReg][0] = alloc_size;
-      fillLevel += alloc_size;
-    }
-    ++counter;
-  }
+        atomicAdd(&globalFreeContinued,1);
 
-  printf("Thread %d  fillLevel: %d byte (%.0f%%) maxBytesPerThread: %d allocatedElements: %d\n",id, fillLevel, 100*float(fillLevel)/maxBytesPerThread,maxBytesPerThread, pointersPerThreadReg);
+    }else{
+      const int alloc_size = getAllocSize(id, randomState);
+
+      if(fillLevel+128 <= maxBytesPerThread){ 
+
+        //printf("thread %d wants to allocate %d bytes of memory\n",id, alloc_size);
+        int* p = (int*) mallocMC::malloc(alloc_size);
+        if(testRequestInit(id, alloc_size, p) == NULL){
+          atomicAdd(&globalFailsContinued,1);
+        }
+        else{
+          p[0] = alloc_size;
+          fillLevel += alloc_size;
+          pointerStoreReg[++pointersPerThreadReg] = p;
+          atomicAdd(&globalAllocationsContinued,1);
+        }
+      }
+    }
+  }
+  //printf("Thread %d  fillLevel: %d byte (%.0f%%) maxBytesPerThread: %d allocatedElements: %d\n",id, fillLevel, 100*float(fillLevel)/maxBytesPerThread,maxBytesPerThread, pointersPerThreadReg);
+}
+
+__global__ void deallocAll(
+    int*** pointerStore,
+    int desiredThreads,
+    int* fillLevelsPerThread,
+    int* pointersPerThread
+    ){
+    
+  int id = threadIdx.x + blockIdx.x * blockDim.x;
+  if(id >= desiredThreads) return;
+
+  int fillLevel = fillLevelsPerThread[id];
+  int** pointerStoreReg = pointerStore[id];
+  int pointersPerThreadReg = pointersPerThread[id];
+
+
+  while(pointersPerThreadReg > 0) { 
+    int free_size = pointerStoreReg[pointersPerThreadReg][0];
+    mallocMC::free(pointerStoreReg[pointersPerThreadReg]);
+    --pointersPerThreadReg;
+    fillLevel -= free_size;
+    atomicAdd(&globalFreeContinued,1);
+  }  
 
   fillLevelsPerThread[id] = fillLevel;
   pointerStore[id] = pointerStoreReg;
   pointersPerThread[id] = pointersPerThreadReg;
 
+  free(pointerStore[id]);
 }
 
 __global__ void getSuccessState(int* success){
+  printf("Allocations done during initialization: %d (%d times, no memory was available)\n",
+      globalAllocationsInit,globalFailsInit);
+  printf("Allocations done while running: %d (%d times, no memory was available)\n",
+      globalAllocationsContinued,globalFailsContinued);
+  printf("Free-operations done while running: %d\n",
+      globalFreeContinued);
   success[0] = globalSuccess;
 }
 
@@ -260,7 +336,7 @@ bool run_benchmark_1(
     const bool machine_readable
     ){
 
-  int h_globalSuccess=-1;
+  int h_globalSuccess=0;
 
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, 0);
@@ -301,13 +377,13 @@ bool run_benchmark_1(
   MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
 
   // initializing the heap
-  mallocMC::initHeap(heapSize*2);
+  mallocMC::initHeap(heapSize);
 
 
   //dout() << "maxStoredChunks: " << maxStoredChunks << std::endl;
   size_t completeStorage = maxMemTotal + maxChunksTotal*sizeof(int*);
   dout() << "necessary memory for malloc on device: " << completeStorage << std::endl;
-  dout() << "mallocMC Heapsize:                     " << heapSize*100 << std::endl;
+  dout() << "mallocMC Heapsize:                     " << heapSize << " (" << heapSize*1.0 << ")" << std::endl;
 
   cudaDeviceSetLimit(cudaLimitMallocHeapSize,completeStorage*2);
 
@@ -322,6 +398,9 @@ bool run_benchmark_1(
       42
       ));
 
+  for(int i=16;i<256;i = i << 1){
+    dout() << "before filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+  }
   //each thread can handle up to ceil(float(maxStoredChunks)/desiredThreads)
   //pointers. 
   //However, if the chunks are bigger than 16byte, the heap-size is far more limiting.
@@ -337,6 +416,10 @@ bool run_benchmark_1(
       ));
   cudaDeviceSynchronize();
 
+  for(int i=16;i<256;i = i << 1){
+    dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+  }
+
   CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
       pointerStoreForThreads,
       maxMemPerThread,
@@ -349,12 +432,10 @@ bool run_benchmark_1(
 
 
 
+  for(int i=16;i<256;i = i << 1){
+    dout() << "after continous run: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+  }
 
-  // release all memory
-  dout() << "deallocation...        ";
-  mallocMC::finalizeHeap();
-
-  dout() << "done "<< std::endl;
 
   machine_output.push_back(MK_STRINGPAIR(desiredThreads));
   machine_output.push_back(MK_STRINGPAIR(ScatterConfig::pagesize::value));
@@ -371,12 +452,25 @@ bool run_benchmark_1(
   cudaMalloc((void**) &d_success,sizeof(int));
   getSuccessState<<<1,1>>>(d_success);
   MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy((void*) &h_globalSuccess,d_success, sizeof(int), cudaMemcpyDeviceToHost));
+  machine_output.push_back(MK_STRINGPAIR(h_globalSuccess));
   print_machine_readable(machine_output);
+
+  // release all memory
+  dout() << "deallocation...        ";
+  deallocAll<<<blocks,threads>>>(
+      pointerStoreForThreads,
+      desiredThreads,
+      fillLevelsPerThread,
+      pointersPerThread
+      );
+
+  mallocMC::finalizeHeap();
   cudaFree(d_success);
   cudaFree(pointerStoreForThreads);
   cudaFree(fillLevelsPerThread);
-
-  machine_output.push_back(MK_STRINGPAIR(h_globalSuccess));
+  cudaFree(pointersPerThread);
+  cudaFree(randomState);
+  dout() << "done "<< std::endl;
 
   return h_globalSuccess;
 }

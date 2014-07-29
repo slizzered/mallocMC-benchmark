@@ -22,8 +22,8 @@ struct ScatterConfig{
 };
 
 struct ScatterHashParams{
-  typedef boost::mpl::int_<38183> hashingK;
-  typedef boost::mpl::int_<17497> hashingDistMP;
+  typedef boost::mpl::int_<17497> hashingK;
+  typedef boost::mpl::int_<38183> hashingDistMP;
   typedef boost::mpl::int_<1>     hashingDistWP;
   typedef boost::mpl::int_<1>     hashingDistWPRel;
 };
@@ -42,8 +42,8 @@ struct AlignmentConfig{
 // which resembles the behaviour of ScatterAlloc
 typedef mallocMC::Allocator<
 mallocMC::CreationPolicies::Scatter<ScatterConfig,ScatterHashParams>,
-  mallocMC::DistributionPolicies::XMallocSIMD<DistributionConfig>,
-  //mallocMC::DistributionPolicies::Noop,
+  //mallocMC::DistributionPolicies::XMallocSIMD<DistributionConfig>,
+  mallocMC::DistributionPolicies::Noop,
   mallocMC::OOMPolicies::ReturnNull,
   mallocMC::ReservePoolPolicies::SimpleCudaMalloc,
   mallocMC::AlignmentPolicies::Shrink<AlignmentConfig>
