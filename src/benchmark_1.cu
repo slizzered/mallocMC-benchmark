@@ -120,13 +120,48 @@ __device__ int globalSuccess = 1;
 __device__ int globalAllocationsInit = 0;
 __device__ int globalAllocationsContinued = 0;
 __device__ int globalFreeContinued = 0;
+__device__ int globalFreeTeardown = 0;
 __device__ int globalFailsInit = 0;
 __device__ int globalFailsContinued = 0;
 
-__device__ int getAllocSize(const int id, curandState_t* randomState){
+__global__ void getTeardown(){
+  printf("Free-operations during Teardown: %d\n",globalFreeTeardown);
+  printf("Total allocations: %d\n",globalAllocationsInit+globalAllocationsContinued);
+  printf("Total free:        %d\n",globalFreeContinued+globalFreeTeardown);
+}
+
+/**
+ * produces a uniform distribution of values from {16,32,64,128}
+ */
+__device__ int getAllocSizeLinScale(const int id, curandState_t* randomState){
+  //pick a number from {0,1,2,3} (uniform distribution)
   int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
   return 16 << multiplier;
-  //return 64;
+}
+
+/**
+ * produces a logarithmic distribution of values from {16,32,64,128}
+ * 64 is twice as likely as 128
+ * 32 is twice as likely as 64
+ * 16 is twice as likely as 32
+ */
+__device__ int getAllocSizeLogScale(const int id, curandState_t* randomState){
+  //pick a number from (1,16] (uniformly distributed)
+  float x = curand_uniform(&randomState[id])*15 + 1; 
+  //get a number from {1,2,3,4}
+  //picking 2 is 2 times more probable than picking 1
+  //picking 3 is 4 times more probable than picking 1
+  //picking 4 is 8 times more probable than picking 1
+  int shift = ceil(log2(x));
+  assert(shift > 0);
+  assert(shift <= 4);
+  return 256 >> shift;
+}
+
+__device__ int getAllocSize(const int id, curandState_t* randomState){
+  //return getAllocSizeLinScale(id, randomState);
+  //return getAllocSizeLogScale(id, randomState);
+  return 16;
 }
 
 __device__ int* testRequestInit(int id, int alloc_size, int* p){
@@ -196,7 +231,7 @@ __global__ void initialFillingOfPointerStorage(
 
     if(fillLevel+128 >= maxBytesPerThread) break;
     if(fillLevelPercent >= 0.75) break;
-    if(mallocMC::getAvailableSlots(alloc_size) < 1) break;
+    //if(mallocMC::getAvailableSlots(alloc_size) < 1) break;
 
     int * p = (int*) mallocMC::malloc(alloc_size);
     if(testRequestInit(id,alloc_size,p) == NULL){
@@ -238,7 +273,7 @@ __global__ void continuedFillingOfPointerStorage(
   int counter = 0;
 
 
-  while(counter < 1000){
+  while(counter < 100){
     ++counter;
     float probability = min(curand_uniform(&randomState[id])+0.25,1.);
     //float probability = max(curand_uniform(&randomState[id]), curand_uniform(&randomState[id]));
@@ -271,6 +306,10 @@ __global__ void continuedFillingOfPointerStorage(
       }
     }
   }
+
+  fillLevelsPerThread[id] = fillLevel;
+  pointerStore[id] = pointerStoreReg;
+  pointersPerThread[id] = pointersPerThreadReg;
   //printf("Thread %d  fillLevel: %d byte (%.0f%%) maxBytesPerThread: %d allocatedElements: %d\n",id, fillLevel, 100*float(fillLevel)/maxBytesPerThread,maxBytesPerThread, pointersPerThreadReg);
 }
 
@@ -291,15 +330,10 @@ __global__ void deallocAll(
 
   while(pointersPerThreadReg > 0) { 
     int free_size = pointerStoreReg[pointersPerThreadReg][0];
-    mallocMC::free(pointerStoreReg[pointersPerThreadReg]);
-    --pointersPerThreadReg;
+    mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
     fillLevel -= free_size;
-    atomicAdd(&globalFreeContinued,1);
+    atomicAdd(&globalFreeTeardown,1);
   }  
-
-  fillLevelsPerThread[id] = fillLevel;
-  pointerStore[id] = pointerStoreReg;
-  pointersPerThread[id] = pointersPerThreadReg;
 
   free(pointerStore[id]);
 }
@@ -398,7 +432,8 @@ bool run_benchmark_1(
       42
       ));
 
-  for(int i=16;i<256;i = i << 1){
+  //for(int i=16;i<256;i = i << 1){
+  {int i=16;
     dout() << "before filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
   }
   //each thread can handle up to ceil(float(maxStoredChunks)/desiredThreads)
@@ -416,25 +451,26 @@ bool run_benchmark_1(
       ));
   cudaDeviceSynchronize();
 
-  for(int i=16;i<256;i = i << 1){
-    dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
-  }
+//  for(int i=16;i<256;i = i << 1){
+//    dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+//  }
 
-  CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
-      pointerStoreForThreads,
-      maxMemPerThread,
-      desiredThreads,
-      fillLevelsPerThread,
-      pointersPerThread,
-      randomState
-      ));
-  cudaDeviceSynchronize();
+//  CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
+//      pointerStoreForThreads,
+//      maxMemPerThread,
+//      desiredThreads,
+//      fillLevelsPerThread,
+//      pointersPerThread,
+//      randomState
+//      ));
+//  cudaDeviceSynchronize();
 
 
+  dout() << "FILLING COMPLETE" << std::endl;
 
-  for(int i=16;i<256;i = i << 1){
-    dout() << "after continous run: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
-  }
+ // for(int i=16;i<256;i = i << 1){
+//    dout() << "after continous run: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+ // }
 
 
   machine_output.push_back(MK_STRINGPAIR(desiredThreads));
@@ -453,16 +489,23 @@ bool run_benchmark_1(
   getSuccessState<<<1,1>>>(d_success);
   MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy((void*) &h_globalSuccess,d_success, sizeof(int), cudaMemcpyDeviceToHost));
   machine_output.push_back(MK_STRINGPAIR(h_globalSuccess));
-  print_machine_readable(machine_output);
+//  print_machine_readable(machine_output);
 
   // release all memory
-  dout() << "deallocation...        ";
-  deallocAll<<<blocks,threads>>>(
+  CUDA_CHECK_KERNEL_SYNC(deallocAll<<<blocks,threads>>>(
       pointerStoreForThreads,
       desiredThreads,
       fillLevelsPerThread,
       pointersPerThread
-      );
+      ));
+  CUDA_CHECK_KERNEL_SYNC(getTeardown<<<1,1>>>());
+  CUDA_CHECK_KERNEL_SYNC(dummy_kernel<<<1,1>>>());
+  cudaDeviceSynchronize();
+
+  //for(int i=16;i<256;i = i << 1){
+  {int i=16;
+    dout() << "after freeing everything: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+  }
 
   mallocMC::finalizeHeap();
   cudaFree(d_success);
