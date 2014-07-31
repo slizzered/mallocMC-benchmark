@@ -1,3 +1,6 @@
 [submodule "mallocMC"]
 	path = mallocMC
 	url = ssh://git@github.com/slizzered/mallocMC.git
+[submodule "scatteralloc"]
+	path = scatteralloc
+	url = git@github.com:slizzered/scatteralloc.git

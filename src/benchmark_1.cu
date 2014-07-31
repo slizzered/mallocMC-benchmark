@@ -27,7 +27,7 @@
 
 #include "print_machine_readable.hpp"
 #include "dout.hpp"
-#include "benchmark_1.config.hpp"
+//#include "benchmark_1.config.hpp"
 #include "cmd_line.hpp"
 #include "macros.hpp"
 
@@ -43,15 +43,27 @@
 #include <curand_kernel.h>
 
 // basic files for mallocMC
-#include <mallocMC/mallocMC_overwrites.hpp>
-#include <mallocMC/mallocMC_utils.hpp>
+//#include <mallocMC/mallocMC_overwrites.hpp>
+//#include <mallocMC/mallocMC_utils.hpp>
+
+//set the template arguments using HEAPARGS
+// pagesize ... byter per page
+// accessblocks ... number of superblocks
+// regionsize ... number of regions for meta data structur
+// wastefactor ... how much memory can be wasted per alloc (multiplicative factor)
+// use_coalescing ... combine memory requests of within each warp
+// resetfreedpages ... allow pages to be reused with a different size
+#define HEAPARGS 4096, 8, 16, 2, false, true
+#include <tools/heap_impl.cuh>
+#include <tools/utils.h>
+
 
 // each pointer in the datastructure will point to this many
 // elements of type allocElem_t
 #define ELEMS_PER_SLOT 750
 
 
-MALLOCMC_SET_ALLOCATOR_TYPE(ScatterAllocator)
+//MALLOCMC_SET_ALLOCATOR_TYPE(ScatterAllocator)
 
 
 // the type of the elements to allocate
@@ -153,8 +165,8 @@ __device__ int getAllocSizeLogScale(const int id, curandState_t* randomState){
   //picking 3 is 4 times more probable than picking 1
   //picking 4 is 8 times more probable than picking 1
   int shift = ceil(log2(x));
-  assert(shift > 0);
-  assert(shift <= 4);
+  //assert(shift > 0);
+  //assert(shift <= 4);
   return 256 >> shift;
 }
 
@@ -177,12 +189,13 @@ __device__ int* testRequestInit(int id, int alloc_size, int* p){
 }
 __device__ int* testRequest(int id, int alloc_size, int* p){
   if(p==NULL){
-    int slotsRemaining = mallocMC::getAvailableSlots(alloc_size);
-    if(slotsRemaining>10){
-      printf("thread %d wants to allocate %d bytes (%u slots remaining), but did NOT get anything!\n",
-          id, alloc_size, slotsRemaining);
-      atomicAnd(&globalSuccess,0);
-    }
+    //int slotsRemaining = mallocMC::getAvailableSlots(alloc_size);
+    //int slotsRemaining = getAvailableSlotsHost(alloc_size);
+    //if(slotsRemaining>10){
+    //  printf("thread %d wants to allocate %d bytes (%u slots remaining), but did NOT get anything!\n",
+    //      id, alloc_size, slotsRemaining);
+    //  atomicAnd(&globalSuccess,0);
+    //}
   }
   return p;
 }
@@ -233,7 +246,8 @@ __global__ void initialFillingOfPointerStorage(
     if(fillLevelPercent >= 0.75) break;
     //if(mallocMC::getAvailableSlots(alloc_size) < 1) break;
 
-    int * p = (int*) mallocMC::malloc(alloc_size);
+//    int * p = (int*) mallocMC::malloc(alloc_size);
+    int * p = (int*) theHeap.alloc(alloc_size);
     if(testRequestInit(id,alloc_size,p) == NULL){
       atomicAdd(&globalFailsInit,1);
       break;
@@ -283,7 +297,8 @@ __global__ void continuedFillingOfPointerStorage(
     if(pointersPerThreadReg > 0 && (probability <= fillLevelPercent)) {
         //printf("thread %d wants to free %d bytes of memory\n",id, free_size);
         int free_size = pointerStoreReg[pointersPerThreadReg][0];
-        mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
+        //mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
+        theHeap.dealloc(pointerStoreReg[pointersPerThreadReg--]);
         fillLevel -= free_size;
         atomicAdd(&globalFreeContinued,1);
 
@@ -293,7 +308,8 @@ __global__ void continuedFillingOfPointerStorage(
       if(fillLevel+128 <= maxBytesPerThread){ 
 
         //printf("thread %d wants to allocate %d bytes of memory\n",id, alloc_size);
-        int* p = (int*) mallocMC::malloc(alloc_size);
+        //int* p = (int*) mallocMC::malloc(alloc_size);
+        int* p = (int*) theHeap.alloc(alloc_size);
         if(testRequestInit(id, alloc_size, p) == NULL){
           atomicAdd(&globalFailsContinued,1);
         }
@@ -330,7 +346,8 @@ __global__ void deallocAll(
 
   while(pointersPerThreadReg > 0) { 
     int free_size = pointerStoreReg[pointersPerThreadReg][0];
-    mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
+    //mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
+    theHeap.dealloc(pointerStoreReg[pointersPerThreadReg--]);
     fillLevel -= free_size;
     atomicAdd(&globalFreeTeardown,1);
   }  
@@ -405,13 +422,18 @@ bool run_benchmark_1(
   int* fillLevelsPerThread;
   int* pointersPerThread;
   curandState_t* randomState;
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointerStoreForThreads, desiredThreads*sizeof(int**)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &fillLevelsPerThread, desiredThreads*sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, desiredThreads*sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
+  //MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointerStoreForThreads, desiredThreads*sizeof(int**)));
+  //MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &fillLevelsPerThread, desiredThreads*sizeof(int)));
+  //MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, desiredThreads*sizeof(int)));
+  //MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
+  CUDA_CHECKED_CALL(cudaMalloc((void**) &pointerStoreForThreads, desiredThreads*sizeof(int**)));
+  CUDA_CHECKED_CALL(cudaMalloc((void**) &fillLevelsPerThread, desiredThreads*sizeof(int)));
+  CUDA_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, desiredThreads*sizeof(int)));
+  CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
 
   // initializing the heap
-  mallocMC::initHeap(heapSize);
+  //mallocMC::initHeap(heapSize);
+  initHeap(heapSize);
 
 
   //dout() << "maxStoredChunks: " << maxStoredChunks << std::endl;
@@ -434,7 +456,8 @@ bool run_benchmark_1(
 
   //for(int i=16;i<256;i = i << 1){
   {int i=16;
-    dout() << "before filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+    //dout() << "before filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+    dout() << "before filling: free slots of size " << i << ": " << getAvailableSlotsHost(i) << std::endl;
   }
   //each thread can handle up to ceil(float(maxStoredChunks)/desiredThreads)
   //pointers. 
@@ -452,43 +475,49 @@ bool run_benchmark_1(
   cudaDeviceSynchronize();
 
 //  for(int i=16;i<256;i = i << 1){
+  {int i=16;
 //    dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
-//  }
-
-//  CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
-//      pointerStoreForThreads,
-//      maxMemPerThread,
-//      desiredThreads,
-//      fillLevelsPerThread,
-//      pointersPerThread,
-//      randomState
-//      ));
-//  cudaDeviceSynchronize();
-
-
+    //dout() << "after filling: free slots of size " << i << ": " << getAvailableSlotsHost(i) << std::endl;
+  }
   dout() << "FILLING COMPLETE" << std::endl;
 
+  CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
+      pointerStoreForThreads,
+      maxMemPerThread,
+      desiredThreads,
+      fillLevelsPerThread,
+      pointersPerThread,
+      randomState
+      ));
+  cudaDeviceSynchronize();
+
+
+
  // for(int i=16;i<256;i = i << 1){
+  {int i=16;
 //    dout() << "after continous run: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
- // }
+    //dout() << "after continous run: free slots of size " << i << ": " << getAvailableSlotsHost(i) << std::endl;
+ }
 
+  dout() << "CONTINOUS RUN COMPLETE" << std::endl;
 
-  machine_output.push_back(MK_STRINGPAIR(desiredThreads));
-  machine_output.push_back(MK_STRINGPAIR(ScatterConfig::pagesize::value));
-  machine_output.push_back(MK_STRINGPAIR(ScatterConfig::accessblocks::value));
-  machine_output.push_back(MK_STRINGPAIR(ScatterConfig::regionsize::value));
-  machine_output.push_back(MK_STRINGPAIR(ScatterConfig::wastefactor::value));
-  machine_output.push_back(MK_STRINGPAIR(ScatterConfig::resetfreedpages::value));
-  machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingK::value));
-  machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistMP::value));
-  machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWP::value));
-  machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWPRel::value));
+  //machine_output.push_back(MK_STRINGPAIR(desiredThreads));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterConfig::pagesize::value));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterConfig::accessblocks::value));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterConfig::regionsize::value));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterConfig::wastefactor::value));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterConfig::resetfreedpages::value));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingK::value));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistMP::value));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWP::value));
+  //machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWPRel::value));
 
   int* d_success;
   cudaMalloc((void**) &d_success,sizeof(int));
   getSuccessState<<<1,1>>>(d_success);
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy((void*) &h_globalSuccess,d_success, sizeof(int), cudaMemcpyDeviceToHost));
-  machine_output.push_back(MK_STRINGPAIR(h_globalSuccess));
+  //MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy((void*) &h_globalSuccess,d_success, sizeof(int), cudaMemcpyDeviceToHost));
+  (cudaMemcpy((void*) &h_globalSuccess,d_success, sizeof(int), cudaMemcpyDeviceToHost));
+  //machine_output.push_back(MK_STRINGPAIR(h_globalSuccess));
 //  print_machine_readable(machine_output);
 
   // release all memory
@@ -504,10 +533,11 @@ bool run_benchmark_1(
 
   //for(int i=16;i<256;i = i << 1){
   {int i=16;
-    dout() << "after freeing everything: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+    //dout() << "after freeing everything: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+    dout() << "after freeing everything: free slots of size " << i << ": " << getAvailableSlotsHost(i) << std::endl;
   }
 
-  mallocMC::finalizeHeap();
+//  mallocMC::finalizeHeap();
   cudaFree(d_success);
   cudaFree(pointerStoreForThreads);
   cudaFree(fillLevelsPerThread);

@@ -11,8 +11,10 @@ set(CMAKE_PREFIX_PATH "/usr/lib/x86_64-linux-gnu/"
 ###############################################################################
 find_package(CUDA REQUIRED)
 set(CUDA_NVCC_FLAGS "-arch=sm_20;-use_fast_math;")
-set(CUDA_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/mallocMC/src/include)
-include_directories(${CUDA_INCLUDE_DIRS}/mallocMC/src/include)
+#set(CUDA_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/mallocMC/src/include)
+#include_directories(${CUDA_INCLUDE_DIRS})
+set(CUDA_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/scatteralloc)
+include_directories(${CUDA_INCLUDE_DIRS})
 cuda_include_directories(${CUDA_INCLUDE_DIRS})
 
 OPTION(CUDA_OUTPUT_INTERMEDIATE_CODE "Output ptx code" OFF)
