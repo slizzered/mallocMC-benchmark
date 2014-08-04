@@ -435,7 +435,6 @@ bool run_benchmark_1(
   size_t maxMemPerThread = heapMB * size_t(1024U * 1024U) / desiredThreads;
   int maxChunksPerThread = maxMemPerThread / 16;
   int maxChunksTotal = maxChunksPerThread * desiredThreads;
-  size_t maxMemTotal = maxMemPerThread * desiredThreads;
 
   int*** pointerStoreForThreads;
   int* fillLevelsPerThread;
@@ -446,18 +445,18 @@ bool run_benchmark_1(
   MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, desiredThreads*sizeof(int)));
   MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
 
-  // initializing the heap
-  if(BENCHMARK_ALLOCATOR == MALLOCMC){
-    mallocMC::initHeap(heapSize);
-  }
 
 
   //dout() << "maxStoredChunks: " << maxStoredChunks << std::endl;
-  size_t completeStorage = maxMemTotal + maxChunksTotal*sizeof(int*);
-  dout() << "necessary memory for malloc on device: " << completeStorage << std::endl;
-  dout() << "mallocMC Heapsize:                     " << heapSize << std::endl;
+  size_t pointerSize = maxChunksTotal*sizeof(int**)*2;
+  dout() << "necessary memory for pointers: " << pointerSize << std::endl;
+  dout() << "reserved Heapsize:             " << heapSize << std::endl;
 
-  cudaDeviceSetLimit(cudaLimitMallocHeapSize,completeStorage*2);
+  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+    cudaDeviceSetLimit(cudaLimitMallocHeapSize, pointerSize);
+    mallocMC::initHeap(heapSize);
+  }else
+    cudaDeviceSetLimit(cudaLimitMallocHeapSize, pointerSize + heapSize);
 
   size_t maxPointersPerThread = ceil(float(maxStoredChunks)/desiredThreads);
   CUDA_CHECK_KERNEL_SYNC(createPointerStorageInThreads<<<blocks,threads>>>(
