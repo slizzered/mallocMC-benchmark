@@ -46,27 +46,21 @@
 #include <mallocMC/mallocMC_overwrites.hpp>
 #include <mallocMC/mallocMC_utils.hpp>
 
-// each pointer in the datastructure will point to this many
-// elements of type allocElem_t
-#define ELEMS_PER_SLOT 750
 
+#define MALLOCMC 5
+#define CUDAMALLOC 7
+
+#define ALLOC_LOG 0
+#define ALLOC_LIN 1
+
+#define BENCHMARK_VERIFY 1
 
 MALLOCMC_SET_ALLOCATOR_TYPE(ScatterAllocator)
 
 
-// the type of the elements to allocate
-typedef unsigned long long allocElem_t;
 
 bool run_benchmark_1(const size_t, const unsigned, const bool);
 
-__global__ void dummy_kernel(){
-  printf("dummy kernel ran successfully\n");
-}
-
-void init_kernel(unsigned threads, unsigned blocks){
-  CUDA_CHECK_KERNEL_SYNC(dummy_kernel<<<1,1>>>());
-  cudaDeviceSynchronize();
-}
 
 std::vector<std::pair<std::string,std::string> > machine_output;
 
@@ -97,7 +91,6 @@ int main(int argc, char** argv){
   machine_output.push_back(MK_STRINGPAIR(deviceProp.totalGlobalMem));
 
 
-  init_kernel(threads, blocks);
 
   correct = run_benchmark_1(heapInMB, threads, machine_readable);
 
@@ -123,6 +116,16 @@ __device__ int globalFreeContinued = 0;
 __device__ int globalFreeTeardown = 0;
 __device__ int globalFailsInit = 0;
 __device__ int globalFailsContinued = 0;
+
+__global__ void dummy_kernel(){
+  printf("dummy kernel ran successfully\n");
+}
+
+
+void init_kernel(unsigned threads, unsigned blocks){
+  CUDA_CHECK_KERNEL_SYNC(dummy_kernel<<<1,1>>>());
+  cudaDeviceSynchronize();
+}
 
 __global__ void getTeardown(){
   printf("Free-operations during Teardown: %d\n",globalFreeTeardown);
@@ -153,15 +156,41 @@ __device__ int getAllocSizeLogScale(const int id, curandState_t* randomState){
   //picking 3 is 4 times more probable than picking 1
   //picking 4 is 8 times more probable than picking 1
   int shift = ceil(log2(x));
+#ifdef BENCHMARK_VERIFY
   assert(shift > 0);
   assert(shift <= 4);
+#endif
   return 256 >> shift;
 }
 
 __device__ int getAllocSize(const int id, curandState_t* randomState){
-  //return getAllocSizeLinScale(id, randomState);
-  return getAllocSizeLogScale(id, randomState);
-  //return 128;
+#if BENCHMARK_ALLOCATION_SIZE == ALLOC_LOG
+    return getAllocSizeLogScale(id, randomState);
+#endif
+#if BENCHMARK_ALLOCATION_SIZE == ALLOC_LIN
+    return getAllocSizeLinScale(id, randomState);
+#endif
+#if BENCHMARK_ALLOCATION_SIZE > 7
+  return BENCHMARK_ALLOCATION_SIZE;
+#endif
+}
+
+__device__ void* allocUnderTest(size_t size){
+#if BENCHMARK_ALLOCATOR == MALLOCMC
+    return mallocMC::malloc(size);
+#endif
+#if BENCHMARK_ALLOCATOR == CUDAMALLOC
+    return malloc(size);
+#endif
+}
+
+__device__ void freeUnderTest(void* p){
+#if BENCHMARK_ALLOCATOR == MALLOCMC
+    mallocMC::free(p);
+#endif
+#if BENCHMARK_ALLOCATOR == CUDAMALLOC
+    free(p);
+#endif
 }
 
 __device__ int* testRequestInit(int id, int alloc_size, int* p){
@@ -175,7 +204,10 @@ __device__ int* testRequestInit(int id, int alloc_size, int* p){
   //}
   return p;
 }
+
 __device__ int* testRequest(int id, int alloc_size, int* p){
+#if BENCHMARK_ALLOCATOR == MALLOCMC
+#if BENCHMARK_VERIFY == 1
   if(p==NULL){
     int slotsRemaining = mallocMC::getAvailableSlots(alloc_size);
     if(slotsRemaining>10){
@@ -184,6 +216,8 @@ __device__ int* testRequest(int id, int alloc_size, int* p){
       atomicAnd(&globalSuccess,0);
     }
   }
+#endif
+#endif
   return p;
 }
 
@@ -233,7 +267,7 @@ __global__ void initialFillingOfPointerStorage(
     if(fillLevelPercent >= 0.75) break;
     //if(mallocMC::getAvailableSlots(alloc_size) < 1) break;
 
-    int * p = (int*) mallocMC::malloc(alloc_size);
+    int * p = (int*) allocUnderTest(alloc_size);
     if(testRequestInit(id,alloc_size,p) == NULL){
       atomicAdd(&globalFailsInit,1);
       break;
@@ -283,17 +317,17 @@ __global__ void continuedFillingOfPointerStorage(
     if(pointersPerThreadReg > 0 && (probability <= fillLevelPercent)) {
         //printf("thread %d wants to free %d bytes of memory\n",id, free_size);
         int free_size = pointerStoreReg[--pointersPerThreadReg][0];
-        mallocMC::free(pointerStoreReg[pointersPerThreadReg]);
+        freeUnderTest(pointerStoreReg[pointersPerThreadReg]);
         fillLevel -= free_size;
+#ifdef BENCHMARK_VERIFY
         atomicAdd(&globalFreeContinued,1);
-
+#endif
     }else{
       const int alloc_size = getAllocSize(id, randomState);
 
       if(fillLevel+128 <= maxBytesPerThread){ 
-
         //printf("thread %d wants to allocate %d bytes of memory\n",id, alloc_size);
-        int* p = (int*) mallocMC::malloc(alloc_size);
+        int* p = (int*) allocUnderTest(alloc_size);
         if(testRequestInit(id, alloc_size, p) == NULL){
           atomicAdd(&globalFailsContinued,1);
         }
@@ -301,7 +335,9 @@ __global__ void continuedFillingOfPointerStorage(
           p[0] = alloc_size;
           fillLevel += alloc_size;
           pointerStoreReg[pointersPerThreadReg++] = p;
+#ifdef BENCHMARK_VERIFY
           atomicAdd(&globalAllocationsContinued,1);
+#endif
         }
       }
     }
@@ -330,7 +366,7 @@ __global__ void deallocAll(
 
   while(pointersPerThreadReg > 0) { 
     int free_size = pointerStoreReg[--pointersPerThreadReg][0];
-    mallocMC::free(pointerStoreReg[pointersPerThreadReg]);
+    freeUnderTest(pointerStoreReg[pointersPerThreadReg]);
     fillLevel -= free_size;
     atomicAdd(&globalFreeTeardown,1);
   }  
@@ -411,7 +447,9 @@ bool run_benchmark_1(
   MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
 
   // initializing the heap
-  mallocMC::initHeap(heapSize);
+  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+    mallocMC::initHeap(heapSize);
+  }
 
 
   //dout() << "maxStoredChunks: " << maxStoredChunks << std::endl;
@@ -432,9 +470,13 @@ bool run_benchmark_1(
       42
       ));
 
-  //for(int i=16;i<256;i = i << 1){
-  {int i=16;
-    dout() << "before filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+  
+  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+    for(int i=16;i<256;i = i << 1){
+      if(BENCHMARK_ALLOCATION_SIZE > 1) i = BENCHMARK_ALLOCATION_SIZE;
+      dout() << "before filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+      if(BENCHMARK_ALLOCATION_SIZE > 1) break;
+    }
   }
   //each thread can handle up to ceil(float(maxStoredChunks)/desiredThreads)
   //pointers. 
@@ -451,9 +493,13 @@ bool run_benchmark_1(
       ));
   cudaDeviceSynchronize();
 
-//  for(int i=16;i<256;i = i << 1){
-//    dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
-//  }
+  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+    for(int i=16;i<256;i = i << 1){
+      if(BENCHMARK_ALLOCATION_SIZE > 1) i = BENCHMARK_ALLOCATION_SIZE;
+      //dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+      if(BENCHMARK_ALLOCATION_SIZE > 1) break;
+    }
+  }
 
   CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
       pointerStoreForThreads,
@@ -468,9 +514,14 @@ bool run_benchmark_1(
 
   dout() << "FILLING COMPLETE" << std::endl;
 
- // for(int i=16;i<256;i = i << 1){
-//    dout() << "after continous run: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
- // }
+
+  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+    for(int i=16;i<256;i = i << 1){
+      if(BENCHMARK_ALLOCATION_SIZE > 1) i = BENCHMARK_ALLOCATION_SIZE;
+      //dout() << "after continous run: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+      if(BENCHMARK_ALLOCATION_SIZE > 1) break;
+    }
+  }
 
 
   machine_output.push_back(MK_STRINGPAIR(desiredThreads));
@@ -502,12 +553,17 @@ bool run_benchmark_1(
   CUDA_CHECK_KERNEL_SYNC(dummy_kernel<<<1,1>>>());
   cudaDeviceSynchronize();
 
-  //for(int i=16;i<256;i = i << 1){
-  {int i=16;
-    dout() << "after freeing everything: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+    for(int i=16;i<256;i = i << 1){
+      if(BENCHMARK_ALLOCATION_SIZE > 1) i = BENCHMARK_ALLOCATION_SIZE;
+      dout() << "after freeing everything: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+      if(BENCHMARK_ALLOCATION_SIZE > 1) break;
+    }
   }
 
-  mallocMC::finalizeHeap();
+  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+    mallocMC::finalizeHeap();
+  }
   cudaFree(d_success);
   cudaFree(pointerStoreForThreads);
   cudaFree(fillLevelsPerThread);

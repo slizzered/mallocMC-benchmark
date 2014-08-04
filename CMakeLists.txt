@@ -40,6 +40,11 @@ if(Boost_VERSION EQUAL 105500)
 endif(Boost_VERSION EQUAL 105500)
 
 
+
+
+
+
+
 ###############################################################################
 # Executables
 ###############################################################################
@@ -49,13 +54,73 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 file(GLOB SRCFILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c*") 
 
-cuda_add_executable(benchmark_1 ${SRCFILES})
+option(ALLOC_SIZE OFF)
 
-target_link_libraries(benchmark_1 ${LIBS})
+if(ALLOC_SIZE)
+  set(ALLOC_SIZE_FIXED ${ALLOC_SIZE})
+else(ALLOC_SIZE)
+  set(ALLOC_SIZE_FIXED 16) 
+endif(ALLOC_SIZE)
 
-#add_custom_target(examples DEPENDS mallocMC_Example01 mallocMC_Example02 VerifyHeap)
+
+###############################################################################
+# Benchmarks with MALLOCMC
+###############################################################################
+add_definitions(-DBENCHMARK_ALLOCATOR=MALLOCMC)
+
+# logarithmic distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LOG)
+cuda_add_executable(benchmark_1_mallocMC_log ${SRCFILES})
+target_link_libraries(benchmark_1_mallocMC_log ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LOG)
+
+# linear distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LIN)
+cuda_add_executable(benchmark_1_mallocMC_lin EXCLUDE_FROM_ALL ${SRCFILES})
+target_link_libraries(benchmark_1_mallocMC_lin ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LIN)
+
+# fixed distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=${ALLOC_SIZE_FIXED})
+cuda_add_executable(benchmark_1_mallocMC_${ALLOC_SIZE_FIXED} EXCLUDE_FROM_ALL ${SRCFILES})
+target_link_libraries(benchmark_1_mallocMC_${ALLOC_SIZE_FIXED} ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=${ALLOC_SIZE_FIXED})
+
+remove_definitions(-DBENCHMARK_ALLOCATOR=MALLOCMC)
 
 
-#target_link_libraries(mallocMC_Example01 ${LIBS})
-#target_link_libraries(mallocMC_Example02 ${LIBS})
-#target_link_libraries(VerifyHeap ${LIBS})
+
+###############################################################################
+# Benchmarks with CUDA Device Malloc
+###############################################################################
+add_definitions(-DBENCHMARK_ALLOCATOR=CUDAMALLOC)
+
+# logarithmic distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LOG)
+cuda_add_executable(benchmark_1_deviceMalloc_log EXCLUDE_FROM_ALL ${SRCFILES})
+target_link_libraries(benchmark_1_deviceMalloc_log ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LOG)
+
+# linear distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LIN)
+cuda_add_executable(benchmark_1_deviceMalloc_lin EXCLUDE_FROM_ALL ${SRCFILES})
+target_link_libraries(benchmark_1_deviceMalloc_lin ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LIN)
+
+# fixed distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=${ALLOC_SIZE_FIXED})
+cuda_add_executable(benchmark_1_deviceMalloc_${ALLOC_SIZE_FIXED} EXCLUDE_FROM_ALL ${SRCFILES})
+target_link_libraries(benchmark_1_deviceMalloc_${ALLOC_SIZE_FIXED} ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=${ALLOC_SIZE_FIXED})
+
+remove_definitions(-DBENCHMARK_ALLOCATOR=CUDAMALLOC)
+
+
+add_custom_target(benchmarks DEPENDS
+  benchmark_1_mallocMC_log
+  benchmark_1_mallocMC_lin
+  benchmark_1_mallocMC_${ALLOC_SIZE_FIXED}
+  benchmark_1_deviceMalloc_log
+  benchmark_1_deviceMalloc_lin
+  benchmark_1_deviceMalloc_${ALLOC_SIZE_FIXED}
+  )
