@@ -160,8 +160,8 @@ __device__ int getAllocSizeLogScale(const int id, curandState_t* randomState){
 
 __device__ int getAllocSize(const int id, curandState_t* randomState){
   //return getAllocSizeLinScale(id, randomState);
-  //return getAllocSizeLogScale(id, randomState);
-  return 16;
+  return getAllocSizeLogScale(id, randomState);
+  //return 128;
 }
 
 __device__ int* testRequestInit(int id, int alloc_size, int* p){
@@ -241,7 +241,7 @@ __global__ void initialFillingOfPointerStorage(
     else{
       p[0] = alloc_size;
       fillLevel += alloc_size;
-      pointerStoreReg[++pointersPerThreadReg] = p;
+      pointerStoreReg[pointersPerThreadReg++] = p;
       atomicAdd(&globalAllocationsInit,1);
 
     }
@@ -282,8 +282,8 @@ __global__ void continuedFillingOfPointerStorage(
     
     if(pointersPerThreadReg > 0 && (probability <= fillLevelPercent)) {
         //printf("thread %d wants to free %d bytes of memory\n",id, free_size);
-        int free_size = pointerStoreReg[pointersPerThreadReg][0];
-        mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
+        int free_size = pointerStoreReg[--pointersPerThreadReg][0];
+        mallocMC::free(pointerStoreReg[pointersPerThreadReg]);
         fillLevel -= free_size;
         atomicAdd(&globalFreeContinued,1);
 
@@ -300,7 +300,7 @@ __global__ void continuedFillingOfPointerStorage(
         else{
           p[0] = alloc_size;
           fillLevel += alloc_size;
-          pointerStoreReg[++pointersPerThreadReg] = p;
+          pointerStoreReg[pointersPerThreadReg++] = p;
           atomicAdd(&globalAllocationsContinued,1);
         }
       }
@@ -329,8 +329,8 @@ __global__ void deallocAll(
 
 
   while(pointersPerThreadReg > 0) { 
-    int free_size = pointerStoreReg[pointersPerThreadReg][0];
-    mallocMC::free(pointerStoreReg[pointersPerThreadReg--]);
+    int free_size = pointerStoreReg[--pointersPerThreadReg][0];
+    mallocMC::free(pointerStoreReg[pointersPerThreadReg]);
     fillLevel -= free_size;
     atomicAdd(&globalFreeTeardown,1);
   }  
@@ -417,7 +417,7 @@ bool run_benchmark_1(
   //dout() << "maxStoredChunks: " << maxStoredChunks << std::endl;
   size_t completeStorage = maxMemTotal + maxChunksTotal*sizeof(int*);
   dout() << "necessary memory for malloc on device: " << completeStorage << std::endl;
-  dout() << "mallocMC Heapsize:                     " << heapSize << " (" << heapSize*1.0 << ")" << std::endl;
+  dout() << "mallocMC Heapsize:                     " << heapSize << std::endl;
 
   cudaDeviceSetLimit(cudaLimitMallocHeapSize,completeStorage*2);
 
@@ -455,15 +455,15 @@ bool run_benchmark_1(
 //    dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
 //  }
 
-//  CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
-//      pointerStoreForThreads,
-//      maxMemPerThread,
-//      desiredThreads,
-//      fillLevelsPerThread,
-//      pointersPerThread,
-//      randomState
-//      ));
-//  cudaDeviceSynchronize();
+  CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
+      pointerStoreForThreads,
+      maxMemPerThread,
+      desiredThreads,
+      fillLevelsPerThread,
+      pointersPerThread,
+      randomState
+      ));
+  cudaDeviceSynchronize();
 
 
   dout() << "FILLING COMPLETE" << std::endl;
