@@ -68,6 +68,23 @@ std::string writeAveragedValues(benchmarkMap &);
 
 std::vector<std::pair<std::string,std::string> > machine_output;
 
+int nextValue(int currentValue){
+  if(currentValue < 8) return currentValue+1;
+  if(currentValue < 16) return currentValue+2;
+  if(currentValue < 32) return currentValue+4;
+  if(currentValue < 64) return currentValue+8;
+  if(currentValue < 128) return currentValue+16;
+  if(currentValue < 256) return currentValue+32;
+  if(currentValue < 512) return currentValue+64;
+  if(currentValue < 1024) return currentValue+128;
+  if(currentValue < 2048) return currentValue+256;
+  if(currentValue < 4096) return currentValue+512;
+  if(currentValue < 8192) return currentValue+1024;
+  if(currentValue < 16384) return currentValue+2048;
+  
+  return currentValue+4096;
+}
+
 int main(int argc, char** argv){
   bool correct          = false;
   bool machine_readable = false;
@@ -99,10 +116,10 @@ int main(int argc, char** argv){
 
   benchmarkMap  benchmarkValues;
 
-  //for(int desiredThreads = threads; desiredThreads<2400; desiredThreads+=16){
-  {int desiredThreads = threads;
+  for(int desiredThreads = threads; desiredThreads<=26624 ; desiredThreads = nextValue(desiredThreads)){
+      //{int desiredThreads = threads;
     std::map<int,std::vector<unsigned long long> >benchmarksPerThreadCount;
-    for(int i=0;i<1;++i){
+    for(int i=0;i<10;++i){
       cudaDeviceReset();
       cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
       std::vector<unsigned long long> benchmarksPerRun;
@@ -117,6 +134,7 @@ int main(int argc, char** argv){
   }
 
   cudaDeviceReset();
+  std::cerr << "starting average" << std::endl;
 
   std::cerr << writeAveragedValues(benchmarkValues) << std::endl;
 
@@ -136,22 +154,32 @@ std::string writeAveragedValues(benchmarkMap& benchmarkValues){
   ss << "# threads    maxAllocClocks    minAllocClocks    maxFreeClocks    minFreeClocks" << std::endl;
   for(benchmarkMap::iterator it = benchmarkValues.begin(); it!=benchmarkValues.end(); ++it){
     ss << it->first << "    ";
-    unsigned long long maxAllocClocks=0;
-    unsigned long long minAllocClocks=~(0llu);
-    unsigned long long maxFreeClocks=0;
-    unsigned long long minFreeClocks=~(0llu);
+    std::vector<unsigned long long> avgAllocClocks;
+    std::vector<unsigned long long> avgFreeClocks;
     for(std::map<int,std::vector<unsigned long long> >::iterator it2 = it->second.begin(); it2!=it->second.end(); ++it2){
-      unsigned long long avgAllocClocks = it2->second[0]/it2->second[1];
-      unsigned long long avgFreeClocks  = it2->second[2]/it2->second[3];
-      maxAllocClocks = max(maxAllocClocks,avgAllocClocks);
-      maxFreeClocks = max(maxFreeClocks,avgFreeClocks);
-      minAllocClocks = min(minAllocClocks,avgAllocClocks);
-      minFreeClocks = min(minFreeClocks,avgFreeClocks);
+      std::vector <unsigned long long> values = it2->second;
+      unsigned long long avgA=1;
+      unsigned long long avgF=1;
+      if(values[1] && values[3]){
+        avgA = values[0]/values[1];
+        avgF = values[2]/values[3];
+      }
+      avgAllocClocks.push_back(avgA);
+      avgFreeClocks.push_back(avgF);
+
     }
-    ss << maxAllocClocks << "    ";
-    ss << minAllocClocks << "    ";
-    ss << maxFreeClocks << "    ";
-    ss << minFreeClocks << std::endl;
+    std::sort(avgAllocClocks.begin(),avgAllocClocks.end());
+    std::sort(avgFreeClocks.begin(),avgFreeClocks.end());
+
+    int offset = 0;
+
+    //if there are at least 3 values, omit the biggest and smallest values to ignore outliers
+    if(avgAllocClocks.size() > 2) offset = 1;
+
+    ss << avgAllocClocks.at(avgAllocClocks.size()-(1+offset)) << "    ";
+    ss << avgAllocClocks.at(offset) << "    ";
+    ss << avgFreeClocks.at(avgFreeClocks.size()-(1+offset)) << "    ";
+    ss << avgFreeClocks.at(offset) << std::endl;
   }
   return ss.str();
 
@@ -602,7 +630,7 @@ bool run_benchmark_1(
 
 
   //dout() << "maxStoredChunks: " << maxStoredChunks << std::endl;
-  size_t pointerSize = maxChunksTotal*sizeof(int**)*2;
+  size_t pointerSize = maxChunksTotal*sizeof(int**)*4;
   dout() << "necessary memory for pointers: " << pointerSize << std::endl;
   dout() << "reserved Heapsize:             " << heapSize << std::endl;
 
