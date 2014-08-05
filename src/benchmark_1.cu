@@ -35,12 +35,14 @@
 #include <boost/mpl/bool.hpp>
 #include <cuda.h>
 #include <iostream>
+#include <sstream>
 #include <stdio.h>
 #include <typeinfo>
 #include <vector>
 #include <string>
 #include <utility>
 #include <curand_kernel.h>
+#include <map>
 
 // basic files for mallocMC
 #include <mallocMC/mallocMC_overwrites.hpp>
@@ -53,14 +55,16 @@
 #define ALLOC_LOG 0
 #define ALLOC_LIN 1
 
-#define BENCHMARK_VERIFY 1
+#define BENCHMARK_VERIFY 0
 
 MALLOCMC_SET_ALLOCATOR_TYPE(ScatterAllocator)
 
 
+typedef std::map<int,std::map<int,std::vector<unsigned long long> > > benchmarkMap;
 
 bool run_benchmark_1(const size_t, const unsigned, const bool);
-
+std::string writeBenchmarkData(std::vector<unsigned long long>&);
+std::string writeAveragedValues(benchmarkMap &);
 
 std::vector<std::pair<std::string,std::string> > machine_output;
 
@@ -83,7 +87,9 @@ int main(int argc, char** argv){
     return 1;
   }
 
-  cudaSetDevice(0);
+  cudaDeviceReset();
+  cudaSetDevice(3);
+  cudaDeviceReset();
 
   machine_output.push_back(MK_STRINGPAIR(deviceProp.major));
   machine_output.push_back(MK_STRINGPAIR(deviceProp.minor));
@@ -91,10 +97,28 @@ int main(int argc, char** argv){
   machine_output.push_back(MK_STRINGPAIR(deviceProp.totalGlobalMem));
 
 
+  benchmarkMap  benchmarkValues;
 
-  correct = run_benchmark_1(heapInMB, threads, machine_readable);
+  //for(int desiredThreads = threads; desiredThreads<2400; desiredThreads+=16){
+  {int desiredThreads = threads;
+    std::map<int,std::vector<unsigned long long> >benchmarksPerThreadCount;
+    for(int i=0;i<1;++i){
+      cudaDeviceReset();
+      cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+      std::vector<unsigned long long> benchmarksPerRun;
+      std::stringstream ss;
+      correct = run_benchmark_1(heapInMB, desiredThreads, machine_readable);
+      ss << desiredThreads << "     ";
+      ss << writeBenchmarkData(benchmarksPerRun);
+      std::cerr << ss.str() << std::endl;
+      benchmarksPerThreadCount[i] = benchmarksPerRun;
+    }
+    benchmarkValues[desiredThreads] = benchmarksPerThreadCount;
+  }
 
   cudaDeviceReset();
+
+  std::cerr << writeAveragedValues(benchmarkValues) << std::endl;
 
   if(!machine_readable || verbose){
     if(correct){
@@ -107,30 +131,90 @@ int main(int argc, char** argv){
   }
 }
 
+std::string writeAveragedValues(benchmarkMap& benchmarkValues){
+  std::stringstream ss;
+  ss << "# threads    maxAllocClocks    minAllocClocks    maxFreeClocks    minFreeClocks" << std::endl;
+  for(benchmarkMap::iterator it = benchmarkValues.begin(); it!=benchmarkValues.end(); ++it){
+    ss << it->first << "    ";
+    unsigned long long maxAllocClocks=0;
+    unsigned long long minAllocClocks=~(0llu);
+    unsigned long long maxFreeClocks=0;
+    unsigned long long minFreeClocks=~(0llu);
+    for(std::map<int,std::vector<unsigned long long> >::iterator it2 = it->second.begin(); it2!=it->second.end(); ++it2){
+      unsigned long long avgAllocClocks = it2->second[0]/it2->second[1];
+      unsigned long long avgFreeClocks  = it2->second[2]/it2->second[3];
+      maxAllocClocks = max(maxAllocClocks,avgAllocClocks);
+      maxFreeClocks = max(maxFreeClocks,avgFreeClocks);
+      minAllocClocks = min(minAllocClocks,avgAllocClocks);
+      minFreeClocks = min(minFreeClocks,avgFreeClocks);
+    }
+    ss << maxAllocClocks << "    ";
+    ss << minAllocClocks << "    ";
+    ss << maxFreeClocks << "    ";
+    ss << minFreeClocks << std::endl;
+  }
+  return ss.str();
+
+}
 
 
 __device__ int globalSuccess = 1;
 __device__ int globalAllocationsInit = 0;
-__device__ int globalAllocationsContinued = 0;
-__device__ int globalFreeContinued = 0;
+__device__ long long unsigned globalAllocationsContinued = 0;
+__device__ long long unsigned globalFreeContinued = 0;
 __device__ int globalFreeTeardown = 0;
 __device__ int globalFailsInit = 0;
 __device__ int globalFailsContinued = 0;
+__device__ long long unsigned globalAllocClocks = 0;
+__device__ long long unsigned globalFreeClocks = 0;
 
-__global__ void dummy_kernel(){
-  printf("dummy kernel ran successfully\n");
+
+__global__ void cleanup_kernel(){
+  printf("cleanup kernel ran successfully\n");
+  globalSuccess = 1;
+  globalAllocationsInit = 0;
+  globalAllocationsContinued = 0;
+  globalFreeContinued = 0;
+  globalFreeTeardown = 0;
+  globalFailsInit = 0;
+  globalFailsContinued = 0;
+  globalAllocClocks = 0;
+  globalFreeClocks = 0;
 }
 
 
-void init_kernel(unsigned threads, unsigned blocks){
-  CUDA_CHECK_KERNEL_SYNC(dummy_kernel<<<1,1>>>());
+void init_kernel(){
+  CUDA_CHECK_KERNEL_SYNC(cleanup_kernel<<<1,1>>>());
   cudaDeviceSynchronize();
+}
+
+__global__ void getBenchmarkData(
+        int *devAllocationsInit,
+        long long unsigned *devAllocationsContinued,
+        long long unsigned *devFreeContinued,
+        int *devFreeTeardown,
+        int *devFailsInit,
+        int *devFailsContinued,
+        long long unsigned *devAllocClocks,
+        long long unsigned *devFreeClocks
+        ){
+
+        *devAllocationsInit = globalAllocationsInit;
+        *devAllocationsContinued = globalAllocationsContinued;
+        *devFreeContinued = globalFreeContinued;
+        *devFreeTeardown = globalFreeTeardown;
+        *devFailsInit = globalFailsInit;
+        *devFailsContinued = globalFailsContinued;
+        *devAllocClocks = globalAllocClocks;
+        *devFreeClocks = globalFreeClocks;
 }
 
 __global__ void getTeardown(){
   printf("Free-operations during Teardown: %d\n",globalFreeTeardown);
   printf("Total allocations: %d\n",globalAllocationsInit+globalAllocationsContinued);
   printf("Total free:        %d\n",globalFreeContinued+globalFreeTeardown);
+  printf("Average clocks per alloc: %llu\n",(long long unsigned)(globalAllocClocks/globalAllocationsContinued));
+  printf("Average clocks per free : %llu\n",(long long unsigned)(globalFreeClocks/globalFreeContinued));
 }
 
 /**
@@ -138,7 +222,7 @@ __global__ void getTeardown(){
  */
 __device__ int getAllocSizeLinScale(const int id, curandState_t* randomState){
   //pick a number from {0,1,2,3} (uniform distribution)
-  int multiplier = ceil(curand_uniform(&randomState[id])*4)-1;
+  int multiplier = ceil(curand_uniform(&randomState[id])*3)-1;
   return 16 << multiplier;
 }
 
@@ -156,7 +240,7 @@ __device__ int getAllocSizeLogScale(const int id, curandState_t* randomState){
   //picking 3 is 4 times more probable than picking 1
   //picking 4 is 8 times more probable than picking 1
   int shift = ceil(log2(x));
-#ifdef BENCHMARK_VERIFY
+#if BENCHMARK_VERIFY == 1
   assert(shift > 0);
   assert(shift <= 4);
 #endif
@@ -175,23 +259,31 @@ __device__ int getAllocSize(const int id, curandState_t* randomState){
 #endif
 }
 
-__device__ void* allocUnderTest(size_t size){
+__device__ void* allocUnderTest(size_t size,long long unsigned* duration){
+  long long unsigned start_time = clock64();
 #if BENCHMARK_ALLOCATOR == MALLOCMC
-    return mallocMC::malloc(size);
+    void* p = mallocMC::malloc(size);
 #endif
 #if BENCHMARK_ALLOCATOR == CUDAMALLOC
-    return malloc(size);
+    void* p = malloc(size);
 #endif
+  long long unsigned stop_time = clock64();
+  *duration = stop_time-start_time;
+  return p;
 }
 
-__device__ void freeUnderTest(void* p){
+__device__ void freeUnderTest(void* p,long long unsigned* duration){
+  long long unsigned start_time = clock64();
 #if BENCHMARK_ALLOCATOR == MALLOCMC
     mallocMC::free(p);
 #endif
 #if BENCHMARK_ALLOCATOR == CUDAMALLOC
     free(p);
 #endif
+  long long unsigned stop_time = clock64();
+  *duration = stop_time-start_time;
 }
+
 
 __device__ int* testRequestInit(int id, int alloc_size, int* p){
   //if(p==NULL){
@@ -264,10 +356,11 @@ __global__ void initialFillingOfPointerStorage(
     const int alloc_size = getAllocSize(id, randomState);
 
     if(fillLevel+128 >= maxBytesPerThread) break;
-    if(fillLevelPercent >= 0.75) break;
+    if(fillLevelPercent >= 0.5) break;
     //if(mallocMC::getAvailableSlots(alloc_size) < 1) break;
 
-    int * p = (int*) allocUnderTest(alloc_size);
+    long long unsigned duration=0llu;
+    int * p = (int*) allocUnderTest(alloc_size, &duration);
     if(testRequestInit(id,alloc_size,p) == NULL){
       atomicAdd(&globalFailsInit,1);
       break;
@@ -304,12 +397,12 @@ __global__ void continuedFillingOfPointerStorage(
   int fillLevel = fillLevelsPerThread[id];
   int** pointerStoreReg = pointerStore[id];
   int pointersPerThreadReg = pointersPerThread[id];
-  int counter = 0;
+  long long unsigned freeTotalClocks = 0llu;
+  long long unsigned allocTotalClocks = 0llu;
 
 
-  while(counter < 100){
-    ++counter;
-    float probability = min(curand_uniform(&randomState[id])+0.25,1.);
+  for(int counter=0;counter<50000/desiredThreads;++counter){
+    const float probability = curand_uniform(&randomState[id]);
     //float probability = max(curand_uniform(&randomState[id]), curand_uniform(&randomState[id]));
     float fillLevelPercent = float(fillLevel) / maxBytesPerThread;
     //probably, the fill level is higher than 75% -> deallocate
@@ -317,36 +410,37 @@ __global__ void continuedFillingOfPointerStorage(
     if(pointersPerThreadReg > 0 && (probability <= fillLevelPercent)) {
         //printf("thread %d wants to free %d bytes of memory\n",id, free_size);
         int free_size = pointerStoreReg[--pointersPerThreadReg][0];
-        freeUnderTest(pointerStoreReg[pointersPerThreadReg]);
+        long long unsigned duration=0llu;
+        freeUnderTest(pointerStoreReg[pointersPerThreadReg],&duration);
+        freeTotalClocks += duration;
         fillLevel -= free_size;
-#ifdef BENCHMARK_VERIFY
-        atomicAdd(&globalFreeContinued,1);
-#endif
+        atomicAdd(&globalFreeContinued,1llu);
     }else{
       const int alloc_size = getAllocSize(id, randomState);
 
       if(fillLevel+128 <= maxBytesPerThread){ 
         //printf("thread %d wants to allocate %d bytes of memory\n",id, alloc_size);
-        int* p = (int*) allocUnderTest(alloc_size);
+        long long unsigned duration=0llu;
+        int* p = (int*) allocUnderTest(alloc_size,&duration);
         if(testRequestInit(id, alloc_size, p) == NULL){
           atomicAdd(&globalFailsContinued,1);
         }
         else{
+          allocTotalClocks += duration;
           p[0] = alloc_size;
           fillLevel += alloc_size;
           pointerStoreReg[pointersPerThreadReg++] = p;
-#ifdef BENCHMARK_VERIFY
-          atomicAdd(&globalAllocationsContinued,1);
-#endif
+          atomicAdd(&globalAllocationsContinued,1llu);
         }
       }
     }
   }
 
+  atomicAdd(&globalAllocClocks, allocTotalClocks);
+  atomicAdd(&globalFreeClocks, freeTotalClocks);
   fillLevelsPerThread[id] = fillLevel;
   pointerStore[id] = pointerStoreReg;
   pointersPerThread[id] = pointersPerThreadReg;
-  //printf("Thread %d  fillLevel: %d byte (%.0f%%) maxBytesPerThread: %d allocatedElements: %d\n",id, fillLevel, 100*float(fillLevel)/maxBytesPerThread,maxBytesPerThread, pointersPerThreadReg);
 }
 
 __global__ void deallocAll(
@@ -366,7 +460,8 @@ __global__ void deallocAll(
 
   while(pointersPerThreadReg > 0) { 
     int free_size = pointerStoreReg[--pointersPerThreadReg][0];
-    freeUnderTest(pointerStoreReg[pointersPerThreadReg]);
+    long long unsigned duration=0llu;
+    freeUnderTest(pointerStoreReg[pointersPerThreadReg],&duration);
     fillLevel -= free_size;
     atomicAdd(&globalFreeTeardown,1);
   }  
@@ -377,13 +472,70 @@ __global__ void deallocAll(
 __global__ void getSuccessState(int* success){
   printf("Allocations done during initialization: %d (%d times, no memory was available)\n",
       globalAllocationsInit,globalFailsInit);
-  printf("Allocations done while running: %d (%d times, no memory was available)\n",
+  printf("Allocations done while running: %llu (%d times, no memory was available)\n",
       globalAllocationsContinued,globalFailsContinued);
-  printf("Free-operations done while running: %d\n",
+  printf("Free-operations done while running: %llu\n",
       globalFreeContinued);
   success[0] = globalSuccess;
 }
 
+std::string writeBenchmarkData(std::vector<unsigned long long>& benchmarksPerRun){
+  int hostAllocationsInit = 0;
+  long long unsigned hostAllocationsContinued = 0;
+  long long unsigned hostFreeContinued = 0;
+  int hostFreeTeardown = 0;
+  int hostFailsInit = 0;
+  int hostFailsContinued = 0;
+  long long unsigned hostAllocClocks = 0;
+  long long unsigned hostFreeClocks = 0;
+  int *devAllocationsInit;
+  long long unsigned *devAllocationsContinued;
+  long long unsigned *devFreeContinued;
+  int *devFreeTeardown;
+  int *devFailsInit;
+  int *devFailsContinued;
+  long long unsigned *devAllocClocks;
+  long long unsigned *devFreeClocks;
+
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devAllocationsInit,sizeof(int)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devAllocationsContinued,sizeof(long long unsigned)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFreeContinued,sizeof(long long unsigned)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFreeTeardown,sizeof(int)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFailsInit,sizeof(int)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFailsContinued,sizeof(int)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devAllocClocks,sizeof(long long unsigned)));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFreeClocks,sizeof(long long unsigned)));
+  CUDA_CHECK_KERNEL_SYNC(getBenchmarkData<<<1,1>>>(
+        devAllocationsInit,
+        devAllocationsContinued,
+        devFreeContinued,
+        devFreeTeardown,
+        devFailsInit,
+        devFailsContinued,
+        devAllocClocks,
+        devFreeClocks
+        ));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostAllocationsInit,devAllocationsInit,sizeof(int),cudaMemcpyDeviceToHost));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostAllocationsContinued,devAllocationsContinued,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFreeContinued,devFreeContinued,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFreeTeardown,devFreeTeardown,sizeof(int),cudaMemcpyDeviceToHost));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFailsInit,devFailsInit,sizeof(int),cudaMemcpyDeviceToHost));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFailsContinued,devFailsContinued,sizeof(int),cudaMemcpyDeviceToHost));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostAllocClocks,devAllocClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
+  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFreeClocks,devFreeClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
+
+  std::stringstream ss;
+  ss << hostAllocClocks << "    " << hostAllocationsContinued << "    ";
+  ss << hostFreeClocks  << "    " << hostFreeContinued;
+  benchmarksPerRun.push_back(hostAllocClocks);
+  benchmarksPerRun.push_back(hostAllocationsContinued);
+  benchmarksPerRun.push_back(hostFreeClocks);
+  benchmarksPerRun.push_back(hostFreeContinued);
+
+
+  //std::cerr << ss.str() << std::endl;
+  return ss.str();
+}
 
 
 /**
@@ -408,6 +560,7 @@ bool run_benchmark_1(
 
   int h_globalSuccess=0;
 
+  init_kernel();
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, 0);
 
@@ -419,7 +572,8 @@ bool run_benchmark_1(
   const size_t threadsUsedInBlock = deviceProp.maxThreadsPerMultiProcessor / maxBlocksPerSM;
   const size_t maxUsefulBlocks = maxBlocksPerSM * deviceProp.multiProcessorCount;
   dout() << "threadsUsedInBlock: " << threadsUsedInBlock << std::endl;
-  dout() << "maxUsefulBlocks: " << maxUsefulBlocks << std::endl;
+  dout() << "maxUsefulBlocks:    " << maxUsefulBlocks << std::endl;
+  dout() << "Clock Frequency:    " << deviceProp.clockRate/1000.0 << "MHz" << std::endl;
   
   const unsigned threads = threadsUsedInBlock;
   const unsigned blocks  = maxUsefulBlocks;
@@ -549,7 +703,6 @@ bool run_benchmark_1(
       pointersPerThread
       ));
   CUDA_CHECK_KERNEL_SYNC(getTeardown<<<1,1>>>());
-  CUDA_CHECK_KERNEL_SYNC(dummy_kernel<<<1,1>>>());
   cudaDeviceSynchronize();
 
   if(BENCHMARK_ALLOCATOR == MALLOCMC){
@@ -560,7 +713,14 @@ bool run_benchmark_1(
     }
   }
 
+
+  //writeBenchmarkData();
+
+
+
+
   if(BENCHMARK_ALLOCATOR == MALLOCMC){
+    h_globalSuccess = h_globalSuccess && (mallocMC::getAvailableSlots(16)==1036320);
     mallocMC::finalizeHeap();
   }
   cudaFree(d_success);
