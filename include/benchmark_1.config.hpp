@@ -15,7 +15,7 @@
 //configurate the CreationPolicy "Scatter"
 struct ScatterConfig{
   typedef boost::mpl::int_<4096>  pagesize;
-  typedef boost::mpl::int_<8>     accessblocks;
+  typedef boost::mpl::int_<16>     accessblocks;
   typedef boost::mpl::int_<16>    regionsize;
   typedef boost::mpl::int_<2>     wastefactor;
   typedef boost::mpl::bool_<true> resetfreedpages;
@@ -26,6 +26,12 @@ struct ScatterHashParams{
   typedef boost::mpl::int_<38183> hashingDistMP;
   typedef boost::mpl::int_<1>     hashingDistWP;
   typedef boost::mpl::int_<1>     hashingDistWPRel;
+};
+struct ScatterHashParamsRene{
+  typedef boost::mpl::int_<16*ScatterConfig::pagesize::value> hashingK;
+  typedef boost::mpl::int_<32*ScatterConfig::pagesize::value> hashingDistMP;
+  typedef boost::mpl::int_<1>     hashingDistWP;
+  typedef boost::mpl::int_<64*ScatterConfig::pagesize::value>     hashingDistWPRel;
 };
 
 // configure the DistributionPolicy "XMallocSIMD"
@@ -41,7 +47,7 @@ struct AlignmentConfig{
 // Define a new allocator and call it ScatterAllocator
 // which resembles the behaviour of ScatterAlloc
 typedef mallocMC::Allocator<
-mallocMC::CreationPolicies::Scatter<ScatterConfig,ScatterHashParams>,
+mallocMC::CreationPolicies::Scatter<ScatterConfig,ScatterHashParamsRene>,
   //mallocMC::DistributionPolicies::XMallocSIMD<DistributionConfig>,
   mallocMC::DistributionPolicies::Noop,
   mallocMC::OOMPolicies::ReturnNull,
