@@ -62,7 +62,7 @@ MALLOCMC_SET_ALLOCATOR_TYPE(ScatterAllocator)
 
 typedef std::map<int,std::map<int,std::vector<unsigned long long> > > benchmarkMap;
 
-bool run_benchmark_1(const size_t, const unsigned, const bool);
+bool run_benchmark_1(const size_t, const unsigned, const bool, const unsigned);
 std::string writeBenchmarkData(std::vector<unsigned long long>&);
 std::string writeAveragedValues(benchmarkMap &);
 
@@ -91,12 +91,16 @@ int main(int argc, char** argv){
   size_t heapInMB       = heapInMB_default;
   unsigned threads      = threads_default;
   unsigned blocks       = blocks_default;
+  unsigned device       = 0;
 
 
-  parse_cmdline(argc, argv, &heapInMB, &threads, &blocks, &machine_readable);
+  parse_cmdline(argc, argv, &heapInMB, &threads, &blocks, &machine_readable, &device);
+
+  cudaSetDevice(device);
+  cudaDeviceReset();
 
   cudaDeviceProp deviceProp;
-  cudaGetDeviceProperties(&deviceProp, 0);
+  cudaGetDeviceProperties(&deviceProp, device);
 
   if( deviceProp.major < 2 ) {
     std::cerr << "Error: Compute Capability >= 2.0 required. (is ";
@@ -104,9 +108,6 @@ int main(int argc, char** argv){
     return 1;
   }
 
-  cudaDeviceReset();
-  cudaSetDevice(3);
-  cudaDeviceReset();
 
   machine_output.push_back(MK_STRINGPAIR(deviceProp.major));
   machine_output.push_back(MK_STRINGPAIR(deviceProp.minor));
@@ -119,12 +120,12 @@ int main(int argc, char** argv){
   for(int desiredThreads = threads; desiredThreads<=26624 ; desiredThreads = nextValue(desiredThreads)){
       //{int desiredThreads = threads;
     std::map<int,std::vector<unsigned long long> >benchmarksPerThreadCount;
-    for(int i=0;i<10;++i){
+    for(int i=0;i<5;++i){
       cudaDeviceReset();
       cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
       std::vector<unsigned long long> benchmarksPerRun;
       std::stringstream ss;
-      correct = run_benchmark_1(heapInMB, desiredThreads, machine_readable);
+      correct = run_benchmark_1(heapInMB, desiredThreads, machine_readable, device);
       ss << desiredThreads << "     ";
       ss << writeBenchmarkData(benchmarksPerRun);
       std::cerr << ss.str() << std::endl;
@@ -134,7 +135,7 @@ int main(int argc, char** argv){
   }
 
   cudaDeviceReset();
-  std::cerr << "starting average" << std::endl;
+  std::cerr << "starting average " << BENCHMARK_ALLOCATOR << " / " << BENCHMARK_ALLOCATION_SIZE << std::endl;
 
   std::cerr << writeAveragedValues(benchmarkValues) << std::endl;
 
@@ -583,14 +584,15 @@ std::string writeBenchmarkData(std::vector<unsigned long long>& benchmarksPerRun
 bool run_benchmark_1(
     const size_t heapMB,
     const unsigned desiredThreads,
-    const bool machine_readable
+    const bool machine_readable,
+    const unsigned device
     ){
 
   int h_globalSuccess=0;
 
   init_kernel();
   cudaDeviceProp deviceProp;
-  cudaGetDeviceProperties(&deviceProp, 0);
+  cudaGetDeviceProperties(&deviceProp, device);
 
   unsigned maxBlocksPerSM = 8;
   if(deviceProp.major > 2) maxBlocksPerSM *= 2; //set to 16 for 3.0 and higher

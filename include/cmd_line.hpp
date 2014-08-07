@@ -67,7 +67,8 @@ void parse_cmdline(
     size_t *heapInMB,
     unsigned *threads,
     unsigned *blocks,
-    bool *machine_readable
+    bool *machine_readable,
+    unsigned *device
     ){
 
   std::vector<std::pair<std::string, std::string> > parameters;
@@ -112,6 +113,10 @@ void parse_cmdline(
     if(p.first == "-m" || p.first == "--machine_readable"){
       *machine_readable = true;
     }   
+
+    if (p.first == "--device") {
+      *device = atoi(p.second.c_str());
+    }
   }
 }
 
