@@ -11,9 +11,8 @@ set(CMAKE_PREFIX_PATH "/usr/lib/x86_64-linux-gnu/"
 ###############################################################################
 find_package(CUDA REQUIRED)
 set(CUDA_NVCC_FLAGS "-arch=sm_20;-use_fast_math;")
-set(CUDA_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/mallocMC/src/include)
-include_directories(${CUDA_INCLUDE_DIRS}/mallocMC/src/include)
-cuda_include_directories(${CUDA_INCLUDE_DIRS})
+cuda_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/mallocMC/src/include)
+cuda_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/scatteralloc)
 
 OPTION(CUDA_OUTPUT_INTERMEDIATE_CODE "Output ptx code" OFF)
 if(CUDA_OUTPUT_INTERMEDIATE_CODE)
@@ -50,7 +49,6 @@ endif(Boost_VERSION EQUAL 105500)
 ###############################################################################
 
 cuda_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 file(GLOB SRCFILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c*") 
 
@@ -116,6 +114,32 @@ remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=${ALLOC_SIZE_FIXED})
 remove_definitions(-DBENCHMARK_ALLOCATOR=CUDAMALLOC)
 
 
+###############################################################################
+# Benchmarks with CUDA ScatterAlloc
+###############################################################################
+add_definitions(-DBENCHMARK_ALLOCATOR=SCATTERALLOC)
+
+# logarithmic distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LOG)
+cuda_add_executable(benchmark_1_scatterAlloc_log EXCLUDE_FROM_ALL ${SRCFILES})
+target_link_libraries(benchmark_1_scatterAlloc_log ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LOG)
+
+# linear distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LIN)
+cuda_add_executable(benchmark_1_scatterAlloc_lin EXCLUDE_FROM_ALL ${SRCFILES})
+target_link_libraries(benchmark_1_scatterAlloc_lin ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=ALLOC_LIN)
+
+# fixed distribution
+add_definitions(-DBENCHMARK_ALLOCATION_SIZE=${ALLOC_SIZE_FIXED})
+cuda_add_executable(benchmark_1_scatterAlloc_${ALLOC_SIZE_FIXED} EXCLUDE_FROM_ALL ${SRCFILES})
+target_link_libraries(benchmark_1_scatterAlloc_${ALLOC_SIZE_FIXED} ${LIBS})
+remove_definitions(-DBENCHMARK_ALLOCATION_SIZE=${ALLOC_SIZE_FIXED})
+
+remove_definitions(-DBENCHMARK_ALLOCATOR=SCATTERALLOC)
+
+
 add_custom_target(benchmarks DEPENDS
   benchmark_1_mallocMC_log
   benchmark_1_mallocMC_lin
@@ -123,4 +147,7 @@ add_custom_target(benchmarks DEPENDS
   benchmark_1_deviceMalloc_log
   benchmark_1_deviceMalloc_lin
   benchmark_1_deviceMalloc_${ALLOC_SIZE_FIXED}
+  benchmark_1_scatterAlloc_log
+  benchmark_1_scatterAlloc_lin
+  benchmark_1_scatterAlloc_${ALLOC_SIZE_FIXED}
   )

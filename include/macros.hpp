@@ -7,3 +7,6 @@
 // start kernel, wait for finish and check errors
 #define CUDA_CHECK_KERNEL_SYNC(...) __VA_ARGS__;CUDA_CHECK(cudaDeviceSynchronize())
 
+
+#define BENCHMARK_CHECKED_CALL(call) call
+

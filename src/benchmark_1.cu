@@ -25,9 +25,16 @@
   THE SOFTWARE.
 */
 
+#define MALLOCMC 5
+#define CUDAMALLOC 7
+#define SCATTERALLOC 13
+#define ALLOC_LOG 0
+#define ALLOC_LIN 1
+
+#define BENCHMARK_VERIFY 0
+
 #include "print_machine_readable.hpp"
 #include "dout.hpp"
-#include "benchmark_1.config.hpp"
 #include "cmd_line.hpp"
 #include "macros.hpp"
 
@@ -43,21 +50,34 @@
 #include <utility>
 #include <curand_kernel.h>
 #include <map>
+#include <algorithm>
 
+#if BENCHMARK_ALLOCATOR == MALLOCMC
 // basic files for mallocMC
 #include <mallocMC/mallocMC_overwrites.hpp>
 #include <mallocMC/mallocMC_utils.hpp>
-
-
-#define MALLOCMC 5
-#define CUDAMALLOC 7
-
-#define ALLOC_LOG 0
-#define ALLOC_LIN 1
-
-#define BENCHMARK_VERIFY 0
-
+#include "benchmark_1.config.hpp"
 MALLOCMC_SET_ALLOCATOR_TYPE(ScatterAllocator)
+#endif
+
+
+#if BENCHMARK_ALLOCATOR == SCATTERALLOC
+typedef unsigned uint32;
+//set the template arguments using HEAPARGS
+// pagesize ... byter per page
+// accessblocks ... number of superblocks
+// regionsize ... number of regions for meta data structur
+// wastefactor ... how much memory can be wasted per alloc (multiplicative factor)
+// use_coalescing ... combine memory requests of within each warp
+// resetfreedpages ... allow pages to be reused with a different size
+#define HEAPARGS 4096, 8, 16, 2, false, true
+#include "tools/heap_impl.cuh"
+#include "tools/utils.h"
+#endif
+
+
+
+
 
 
 typedef std::map<int,std::map<int,std::vector<unsigned long long> > > benchmarkMap;
@@ -296,6 +316,9 @@ __device__ void* allocUnderTest(size_t size,long long unsigned* duration){
 #if BENCHMARK_ALLOCATOR == CUDAMALLOC
     void* p = malloc(size);
 #endif
+#if BENCHMARK_ALLOCATOR == SCATTERALLOC
+    void* p = theHeap.alloc(size);
+#endif
   long long unsigned stop_time = clock64();
   *duration = stop_time-start_time;
   return p;
@@ -308,6 +331,9 @@ __device__ void freeUnderTest(void* p,long long unsigned* duration){
 #endif
 #if BENCHMARK_ALLOCATOR == CUDAMALLOC
     free(p);
+#endif
+#if BENCHMARK_ALLOCATOR == SCATTERALLOC
+    theHeap.dealloc(p);
 #endif
   long long unsigned stop_time = clock64();
   *duration = stop_time-start_time;
@@ -526,14 +552,14 @@ std::string writeBenchmarkData(std::vector<unsigned long long>& benchmarksPerRun
   long long unsigned *devAllocClocks;
   long long unsigned *devFreeClocks;
 
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devAllocationsInit,sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devAllocationsContinued,sizeof(long long unsigned)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFreeContinued,sizeof(long long unsigned)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFreeTeardown,sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFailsInit,sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFailsContinued,sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devAllocClocks,sizeof(long long unsigned)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &devFreeClocks,sizeof(long long unsigned)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devAllocationsInit,sizeof(int)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devAllocationsContinued,sizeof(long long unsigned)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFreeContinued,sizeof(long long unsigned)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFreeTeardown,sizeof(int)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFailsInit,sizeof(int)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFailsContinued,sizeof(int)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devAllocClocks,sizeof(long long unsigned)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFreeClocks,sizeof(long long unsigned)));
   CUDA_CHECK_KERNEL_SYNC(getBenchmarkData<<<1,1>>>(
         devAllocationsInit,
         devAllocationsContinued,
@@ -544,14 +570,14 @@ std::string writeBenchmarkData(std::vector<unsigned long long>& benchmarksPerRun
         devAllocClocks,
         devFreeClocks
         ));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostAllocationsInit,devAllocationsInit,sizeof(int),cudaMemcpyDeviceToHost));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostAllocationsContinued,devAllocationsContinued,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFreeContinued,devFreeContinued,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFreeTeardown,devFreeTeardown,sizeof(int),cudaMemcpyDeviceToHost));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFailsInit,devFailsInit,sizeof(int),cudaMemcpyDeviceToHost));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFailsContinued,devFailsContinued,sizeof(int),cudaMemcpyDeviceToHost));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostAllocClocks,devAllocClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy(&hostFreeClocks,devFreeClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostAllocationsInit,devAllocationsInit,sizeof(int),cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostAllocationsContinued,devAllocationsContinued,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFreeContinued,devFreeContinued,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFreeTeardown,devFreeTeardown,sizeof(int),cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFailsInit,devFailsInit,sizeof(int),cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFailsContinued,devFailsContinued,sizeof(int),cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostAllocClocks,devAllocClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFreeClocks,devFreeClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
 
   std::stringstream ss;
   ss << hostAllocClocks << "    " << hostAllocationsContinued << "    ";
@@ -624,10 +650,10 @@ bool run_benchmark_1(
   int* fillLevelsPerThread;
   int* pointersPerThread;
   curandState_t* randomState;
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointerStoreForThreads, desiredThreads*sizeof(int**)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &fillLevelsPerThread, desiredThreads*sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, desiredThreads*sizeof(int)));
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &pointerStoreForThreads, desiredThreads*sizeof(int**)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &fillLevelsPerThread, desiredThreads*sizeof(int)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &pointersPerThread, desiredThreads*sizeof(int)));
+  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &randomState, desiredThreads * sizeof(curandState_t)));
 
 
 
@@ -636,11 +662,17 @@ bool run_benchmark_1(
   dout() << "necessary memory for pointers: " << pointerSize << std::endl;
   dout() << "reserved Heapsize:             " << heapSize << std::endl;
 
-  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+#if BENCHMARK_ALLOCATOR == MALLOCMC
     cudaDeviceSetLimit(cudaLimitMallocHeapSize, pointerSize);
     mallocMC::initHeap(heapSize);
-  }else
+#endif
+#if BENCHMARK_ALLOCATOR == CUDAMALLOC
     cudaDeviceSetLimit(cudaLimitMallocHeapSize, pointerSize + heapSize);
+#endif
+#if BENCHMARK_ALLOCATOR == SCATTERALLOC
+    cudaDeviceSetLimit(cudaLimitMallocHeapSize, pointerSize);
+    initHeap(heapSize);
+#endif
 
   size_t maxPointersPerThread = ceil(float(maxStoredChunks)/desiredThreads);
   CUDA_CHECK_KERNEL_SYNC(createPointerStorageInThreads<<<blocks,threads>>>(
@@ -654,13 +686,17 @@ bool run_benchmark_1(
       ));
 
   
-  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+#if BENCHMARK_ALLOCATOR != CUDAMALLOC
     for(int i=16;i<256;i = i << 1){
       if(BENCHMARK_ALLOCATION_SIZE > 1) i = BENCHMARK_ALLOCATION_SIZE;
+#if BENCHMARK_ALLOCATOR == MALLOCMC
       dout() << "before filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+#else 
+      dout() << "before filling: free slots of size " << i << ": " << getAvailableSlotsHost(i) << std::endl;
+#endif
       if(BENCHMARK_ALLOCATION_SIZE > 1) break;
     }
-  }
+#endif
   //each thread can handle up to ceil(float(maxStoredChunks)/desiredThreads)
   //pointers. 
   //However, if the chunks are bigger than 16byte, the heap-size is far more limiting.
@@ -676,13 +712,6 @@ bool run_benchmark_1(
       ));
   cudaDeviceSynchronize();
 
-  if(BENCHMARK_ALLOCATOR == MALLOCMC){
-    for(int i=16;i<256;i = i << 1){
-      if(BENCHMARK_ALLOCATION_SIZE > 1) i = BENCHMARK_ALLOCATION_SIZE;
-      //dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
-      if(BENCHMARK_ALLOCATION_SIZE > 1) break;
-    }
-  }
 
   CUDA_CHECK_KERNEL_SYNC(continuedFillingOfPointerStorage<<<blocks,threads>>>(
       pointerStoreForThreads,
@@ -698,15 +727,9 @@ bool run_benchmark_1(
   dout() << "FILLING COMPLETE" << std::endl;
 
 
-  if(BENCHMARK_ALLOCATOR == MALLOCMC){
-    for(int i=16;i<256;i = i << 1){
-      if(BENCHMARK_ALLOCATION_SIZE > 1) i = BENCHMARK_ALLOCATION_SIZE;
-      //dout() << "after continous run: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
-      if(BENCHMARK_ALLOCATION_SIZE > 1) break;
-    }
-  }
 
 
+#if BENCHMARK_ALLOCATOR == MALLOCMC
   machine_output.push_back(MK_STRINGPAIR(desiredThreads));
   machine_output.push_back(MK_STRINGPAIR(ScatterConfig::pagesize::value));
   machine_output.push_back(MK_STRINGPAIR(ScatterConfig::accessblocks::value));
@@ -717,11 +740,12 @@ bool run_benchmark_1(
   machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistMP::value));
   machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWP::value));
   machine_output.push_back(MK_STRINGPAIR(ScatterHashParams::hashingDistWPRel::value));
+#endif
 
   int* d_success;
   cudaMalloc((void**) &d_success,sizeof(int));
   getSuccessState<<<1,1>>>(d_success);
-  MALLOCMC_CUDA_CHECKED_CALL(cudaMemcpy((void*) &h_globalSuccess,d_success, sizeof(int), cudaMemcpyDeviceToHost));
+  BENCHMARK_CHECKED_CALL(cudaMemcpy((void*) &h_globalSuccess,d_success, sizeof(int), cudaMemcpyDeviceToHost));
   machine_output.push_back(MK_STRINGPAIR(h_globalSuccess));
 //  print_machine_readable(machine_output);
 
@@ -735,24 +759,27 @@ bool run_benchmark_1(
   CUDA_CHECK_KERNEL_SYNC(getTeardown<<<1,1>>>());
   cudaDeviceSynchronize();
 
-  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+#if BENCHMARK_ALLOCATOR != CUDAMALLOC
     for(int i=16;i<256;i = i << 1){
       if(BENCHMARK_ALLOCATION_SIZE > 1) i = BENCHMARK_ALLOCATION_SIZE;
-      dout() << "after freeing everything: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+#if BENCHMARK_ALLOCATOR == MALLOCMC
+      dout() << "after filling: free slots of size " << i << ": " << mallocMC::getAvailableSlots(i) << std::endl;
+#else 
+      dout() << "after filling: free slots of size " << i << ": " << getAvailableSlotsHost(i) << std::endl;
+#endif
       if(BENCHMARK_ALLOCATION_SIZE > 1) break;
     }
-  }
-
-
-  //writeBenchmarkData();
+#endif
 
 
 
-
-  if(BENCHMARK_ALLOCATOR == MALLOCMC){
+#if BENCHMARK_ALLOCATOR == MALLOCMC
     h_globalSuccess = h_globalSuccess && (mallocMC::getAvailableSlots(16)==1036320);
     mallocMC::finalizeHeap();
-  }
+#endif
+#if BENCHMARK_ALLOCATOR == SCATTERALLOC
+    h_globalSuccess = h_globalSuccess && (getAvailableSlotsHost(16)==1036320);
+#endif
   cudaFree(d_success);
   cudaFree(pointerStoreForThreads);
   cudaFree(fillLevelsPerThread);
