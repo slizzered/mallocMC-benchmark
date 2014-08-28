@@ -118,6 +118,7 @@ int main(int argc, char** argv){
 
   cudaSetDevice(device);
   cudaDeviceReset();
+  cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
 
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, device);
@@ -140,24 +141,26 @@ int main(int argc, char** argv){
   for(int desiredThreads = threads; desiredThreads<=26624 ; desiredThreads = nextValue(desiredThreads)){
       //{int desiredThreads = threads;
     std::map<int,std::vector<unsigned long long> >benchmarksPerThreadCount;
-    for(int i=0;i<5;++i){
-      cudaDeviceReset();
-      cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+    for(int i=0;i<1;++i){
       std::vector<unsigned long long> benchmarksPerRun;
       std::stringstream ss;
+      cudaDeviceSynchronize();
       correct = run_benchmark_1(heapInMB, desiredThreads, machine_readable, device);
+      cudaDeviceSynchronize();
       ss << desiredThreads << "     ";
       ss << writeBenchmarkData(benchmarksPerRun);
       std::cerr << ss.str() << std::endl;
       benchmarksPerThreadCount[i] = benchmarksPerRun;
+      usleep(1000000);
     }
     benchmarkValues[desiredThreads] = benchmarksPerThreadCount;
+    break;
   }
 
   cudaDeviceReset();
-  std::cerr << "starting average " << BENCHMARK_ALLOCATOR << " / " << BENCHMARK_ALLOCATION_SIZE << std::endl;
+  //std::cerr << "starting average " << BENCHMARK_ALLOCATOR << " / " << BENCHMARK_ALLOCATION_SIZE << std::endl;
 
-  std::cerr << writeAveragedValues(benchmarkValues) << std::endl;
+  //std::cerr << writeAveragedValues(benchmarkValues) << std::endl;
 
   if(!machine_readable || verbose){
     if(correct){
@@ -311,7 +314,8 @@ __device__ int getAllocSize(const int id, curandState_t* randomState){
 __device__ void* allocUnderTest(size_t size,long long unsigned* duration){
   long long unsigned start_time = clock64();
 #if BENCHMARK_ALLOCATOR == MALLOCMC
-    void* p = mallocMC::malloc(size);
+    //void* p = mallocMC::malloc(size);
+    void* p = mallocMC::mallocMCGlobalObject.alloc(size);
 #endif
 #if BENCHMARK_ALLOCATOR == CUDAMALLOC
     void* p = malloc(size);
@@ -580,8 +584,8 @@ std::string writeBenchmarkData(std::vector<unsigned long long>& benchmarksPerRun
   BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFreeClocks,devFreeClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
 
   std::stringstream ss;
-  ss << hostAllocClocks << "    " << hostAllocationsContinued << "    ";
-  ss << hostFreeClocks  << "    " << hostFreeContinued;
+  ss << hostAllocClocks/hostAllocationsContinued << "    ";
+  ss << hostFreeClocks/hostFreeContinued;
   benchmarksPerRun.push_back(hostAllocClocks);
   benchmarksPerRun.push_back(hostAllocationsContinued);
   benchmarksPerRun.push_back(hostFreeClocks);
@@ -685,6 +689,13 @@ bool run_benchmark_1(
       42
       ));
 
+#if BENCHMARK_ALLOCATOR == MALLOCMC
+  dout() << "size of MALLOCMC global object:             " << sizeof(mallocMC::mallocMCGlobalObject) << std::endl;
+#endif
+
+#if BENCHMARK_ALLOCATOR == SCATTERALLOC
+  dout() << "size of ScatterAlloc global object:         " << sizeof(theHeap) << std::endl;
+#endif
   
 #if BENCHMARK_ALLOCATOR != CUDAMALLOC
     for(int i=16;i<256;i = i << 1){
