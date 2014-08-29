@@ -10,7 +10,7 @@ set(CMAKE_PREFIX_PATH "/usr/lib/x86_64-linux-gnu/"
 # CUDA
 ###############################################################################
 find_package(CUDA REQUIRED)
-set(CUDA_NVCC_FLAGS "-arch=sm_20;-use_fast_math;")
+set(CUDA_NVCC_FLAGS "-arch=sm_35;-use_fast_math;")
 cuda_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/mallocMC/src/include)
 cuda_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/scatteralloc)
 
@@ -19,7 +19,7 @@ if(CUDA_OUTPUT_INTERMEDIATE_CODE)
   set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};-Xptxas;-v;--keep;--keep-dir ${PROJECT_BINARY_DIR}/nvcctemp;")
 endif(CUDA_OUTPUT_INTERMEDIATE_CODE)
 
-SET(CUDA_OPTIMIZATION_TYPE "unset" CACHE STRING "CUDA Optimization")
+SET(CUDA_OPTIMIZATION_TYPE "-O3" CACHE STRING "CUDA Optimization")
 set_property(CACHE CUDA_OPTIMIZATION_TYPE PROPERTY STRINGS "unset;-G0;-O0;-O1;-O2;-O3")
 if(NOT ${CUDA_OPTIMIZATION_TYPE} STREQUAL  "unset")
   set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};${CUDA_OPTIMIZATION_TYPE}")
@@ -29,7 +29,7 @@ endif()
 ###############################################################################
 # Boost
 ###############################################################################
-find_package(Boost 1.48.0 REQUIRED)
+find_package(Boost 1.48.0 REQUIRED filesystem system)
 include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
 set(LIBS ${LIBS} ${Boost_LIBRARIES})
 
@@ -62,6 +62,8 @@ else(ALLOC_SIZE)
   set(ALLOC_SIZE_FIXED 16) 
 endif(ALLOC_SIZE)
 
+add_executable(result_parser "${CMAKE_CURRENT_SOURCE_DIR}/src/parse_results.cpp")
+target_link_libraries(result_parser ${LIBS})
 
 
 ###############################################################################

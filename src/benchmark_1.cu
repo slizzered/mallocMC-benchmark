@@ -83,7 +83,7 @@ typedef unsigned uint32;
 typedef std::map<int,std::map<int,std::vector<unsigned long long> > > benchmarkMap;
 
 bool run_benchmark_1(const size_t, const unsigned, const bool, const unsigned);
-std::string writeBenchmarkData(std::vector<unsigned long long>&);
+std::string writeBenchmarkData();
 std::string writeAveragedValues(benchmarkMap &);
 
 std::vector<std::pair<std::string,std::string> > machine_output;
@@ -119,48 +119,18 @@ int main(int argc, char** argv){
   cudaSetDevice(device);
   cudaDeviceReset();
   cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, device);
-
   if( deviceProp.major < 2 ) {
     std::cerr << "Error: Compute Capability >= 2.0 required. (is ";
     std::cerr << deviceProp.major << "."<< deviceProp.minor << ")" << std::endl;
     return 1;
   }
 
-
-  machine_output.push_back(MK_STRINGPAIR(deviceProp.major));
-  machine_output.push_back(MK_STRINGPAIR(deviceProp.minor));
-  machine_output.push_back(MK_STRINGPAIR(deviceProp.name));
-  machine_output.push_back(MK_STRINGPAIR(deviceProp.totalGlobalMem));
-
-
-  benchmarkMap  benchmarkValues;
-
-  for(int desiredThreads = threads; desiredThreads<=26624 ; desiredThreads = nextValue(desiredThreads)){
-      //{int desiredThreads = threads;
-    std::map<int,std::vector<unsigned long long> >benchmarksPerThreadCount;
-    for(int i=0;i<1;++i){
-      std::vector<unsigned long long> benchmarksPerRun;
-      std::stringstream ss;
-      cudaDeviceSynchronize();
-      correct = run_benchmark_1(heapInMB, desiredThreads, machine_readable, device);
-      cudaDeviceSynchronize();
-      ss << desiredThreads << "     ";
-      ss << writeBenchmarkData(benchmarksPerRun);
-      std::cerr << ss.str() << std::endl;
-      benchmarksPerThreadCount[i] = benchmarksPerRun;
-      usleep(1000000);
-    }
-    benchmarkValues[desiredThreads] = benchmarksPerThreadCount;
-    break;
-  }
+  correct = run_benchmark_1(heapInMB, threads, machine_readable, device);
+  std::cerr << threads << "    " << writeBenchmarkData() << std::endl;
 
   cudaDeviceReset();
-  //std::cerr << "starting average " << BENCHMARK_ALLOCATOR << " / " << BENCHMARK_ALLOCATION_SIZE << std::endl;
-
-  //std::cerr << writeAveragedValues(benchmarkValues) << std::endl;
 
   if(!machine_readable || verbose){
     if(correct){
@@ -172,43 +142,6 @@ int main(int argc, char** argv){
     }
   }
 }
-
-std::string writeAveragedValues(benchmarkMap& benchmarkValues){
-  std::stringstream ss;
-  ss << "# threads    maxAllocClocks    minAllocClocks    maxFreeClocks    minFreeClocks" << std::endl;
-  for(benchmarkMap::iterator it = benchmarkValues.begin(); it!=benchmarkValues.end(); ++it){
-    ss << it->first << "    ";
-    std::vector<unsigned long long> avgAllocClocks;
-    std::vector<unsigned long long> avgFreeClocks;
-    for(std::map<int,std::vector<unsigned long long> >::iterator it2 = it->second.begin(); it2!=it->second.end(); ++it2){
-      std::vector <unsigned long long> values = it2->second;
-      unsigned long long avgA=1;
-      unsigned long long avgF=1;
-      if(values[1] && values[3]){
-        avgA = values[0]/values[1];
-        avgF = values[2]/values[3];
-      }
-      avgAllocClocks.push_back(avgA);
-      avgFreeClocks.push_back(avgF);
-
-    }
-    std::sort(avgAllocClocks.begin(),avgAllocClocks.end());
-    std::sort(avgFreeClocks.begin(),avgFreeClocks.end());
-
-    int offset = 0;
-
-    //if there are at least 3 values, omit the biggest and smallest values to ignore outliers
-    if(avgAllocClocks.size() > 2) offset = 1;
-
-    ss << avgAllocClocks.at(avgAllocClocks.size()-(1+offset)) << "    ";
-    ss << avgAllocClocks.at(offset) << "    ";
-    ss << avgFreeClocks.at(avgFreeClocks.size()-(1+offset)) << "    ";
-    ss << avgFreeClocks.at(offset) << std::endl;
-  }
-  return ss.str();
-
-}
-
 
 __device__ int globalSuccess = 1;
 __device__ int globalAllocationsInit = 0;
@@ -241,22 +174,22 @@ void init_kernel(){
 }
 
 __global__ void getBenchmarkData(
-        int *devAllocationsInit,
+        //int *devAllocationsInit,
         long long unsigned *devAllocationsContinued,
         long long unsigned *devFreeContinued,
-        int *devFreeTeardown,
-        int *devFailsInit,
-        int *devFailsContinued,
+        //int *devFreeTeardown,
+        //int *devFailsInit,
+        //int *devFailsContinued,
         long long unsigned *devAllocClocks,
         long long unsigned *devFreeClocks
         ){
 
-        *devAllocationsInit = globalAllocationsInit;
+        //*devAllocationsInit = globalAllocationsInit;
         *devAllocationsContinued = globalAllocationsContinued;
         *devFreeContinued = globalFreeContinued;
-        *devFreeTeardown = globalFreeTeardown;
-        *devFailsInit = globalFailsInit;
-        *devFailsContinued = globalFailsContinued;
+        //*devFreeTeardown = globalFreeTeardown;
+        //*devFailsInit = globalFailsInit;
+        //*devFailsContinued = globalFailsContinued;
         *devAllocClocks = globalAllocClocks;
         *devFreeClocks = globalFreeClocks;
 }
@@ -344,17 +277,6 @@ __device__ void freeUnderTest(void* p,long long unsigned* duration){
 }
 
 
-__device__ int* testRequestInit(int id, int alloc_size, int* p){
-  //if(p==NULL){
-  //  int slotsRemaining = mallocMC::getAvailableSlots(alloc_size);
-  //  if(slotsRemaining>0){
-  //    printf("Init: thread %d wants to allocate %d bytes (%d slots remaining), but did NOT get anything!\n",
-  //        id, alloc_size, slotsRemaining);
-  //    atomicAnd(&globalSuccess,0);
-  //  }
-  //}
-  return p;
-}
 
 __device__ int* testRequest(int id, int alloc_size, int* p){
 #if BENCHMARK_ALLOCATOR == MALLOCMC
@@ -420,7 +342,7 @@ __global__ void initialFillingOfPointerStorage(
 
     long long unsigned duration=0llu;
     int * p = (int*) allocUnderTest(alloc_size, &duration);
-    if(testRequestInit(id,alloc_size,p) == NULL){
+    if(p == NULL){
       atomicAdd(&globalFailsInit,1);
       break;
     }
@@ -481,7 +403,7 @@ __global__ void continuedFillingOfPointerStorage(
         //printf("thread %d wants to allocate %d bytes of memory\n",id, alloc_size);
         long long unsigned duration=0llu;
         int* p = (int*) allocUnderTest(alloc_size,&duration);
-        if(testRequestInit(id, alloc_size, p) == NULL){
+        if(p == NULL){
           atomicAdd(&globalFailsContinued,1);
         }
         else{
@@ -538,61 +460,47 @@ __global__ void getSuccessState(int* success){
   success[0] = globalSuccess;
 }
 
-std::string writeBenchmarkData(std::vector<unsigned long long>& benchmarksPerRun){
-  int hostAllocationsInit = 0;
+std::string writeBenchmarkData(){
+  //int hostAllocationsInit = 0;
   long long unsigned hostAllocationsContinued = 0;
   long long unsigned hostFreeContinued = 0;
-  int hostFreeTeardown = 0;
-  int hostFailsInit = 0;
-  int hostFailsContinued = 0;
+  //int hostFreeTeardown = 0;
+  //int hostFailsInit = 0;
+  //int hostFailsContinued = 0;
   long long unsigned hostAllocClocks = 0;
   long long unsigned hostFreeClocks = 0;
-  int *devAllocationsInit;
+  //int *devAllocationsInit;
   long long unsigned *devAllocationsContinued;
   long long unsigned *devFreeContinued;
-  int *devFreeTeardown;
-  int *devFailsInit;
-  int *devFailsContinued;
+  //int *devFreeTeardown;
+  //int *devFailsInit;
+  //int *devFailsContinued;
   long long unsigned *devAllocClocks;
   long long unsigned *devFreeClocks;
 
-  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devAllocationsInit,sizeof(int)));
   BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devAllocationsContinued,sizeof(long long unsigned)));
   BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFreeContinued,sizeof(long long unsigned)));
-  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFreeTeardown,sizeof(int)));
-  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFailsInit,sizeof(int)));
-  BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFailsContinued,sizeof(int)));
   BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devAllocClocks,sizeof(long long unsigned)));
   BENCHMARK_CHECKED_CALL(cudaMalloc((void**) &devFreeClocks,sizeof(long long unsigned)));
   CUDA_CHECK_KERNEL_SYNC(getBenchmarkData<<<1,1>>>(
-        devAllocationsInit,
+        //devAllocationsInit,
         devAllocationsContinued,
         devFreeContinued,
-        devFreeTeardown,
-        devFailsInit,
-        devFailsContinued,
+        //devFreeTeardown,
+        //devFailsInit,
+        //devFailsContinued,
         devAllocClocks,
         devFreeClocks
         ));
-  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostAllocationsInit,devAllocationsInit,sizeof(int),cudaMemcpyDeviceToHost));
   BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostAllocationsContinued,devAllocationsContinued,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
   BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFreeContinued,devFreeContinued,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
-  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFreeTeardown,devFreeTeardown,sizeof(int),cudaMemcpyDeviceToHost));
-  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFailsInit,devFailsInit,sizeof(int),cudaMemcpyDeviceToHost));
-  BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFailsContinued,devFailsContinued,sizeof(int),cudaMemcpyDeviceToHost));
   BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostAllocClocks,devAllocClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
   BENCHMARK_CHECKED_CALL(cudaMemcpy(&hostFreeClocks,devFreeClocks,sizeof(long long unsigned),cudaMemcpyDeviceToHost));
 
   std::stringstream ss;
   ss << hostAllocClocks/hostAllocationsContinued << "    ";
   ss << hostFreeClocks/hostFreeContinued;
-  benchmarksPerRun.push_back(hostAllocClocks);
-  benchmarksPerRun.push_back(hostAllocationsContinued);
-  benchmarksPerRun.push_back(hostFreeClocks);
-  benchmarksPerRun.push_back(hostFreeContinued);
 
-
-  //std::cerr << ss.str() << std::endl;
   return ss.str();
 }
 
