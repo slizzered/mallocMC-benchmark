@@ -18,7 +18,7 @@ struct ScatterConfig{
   typedef boost::mpl::int_<8>     accessblocks;
   typedef boost::mpl::int_<16>    regionsize;
   typedef boost::mpl::int_<2>     wastefactor;
-  typedef boost::mpl::bool_<true> resetfreedpages;
+  typedef boost::mpl::bool_<false> resetfreedpages;
 };
 
 struct ScatterHashParams{
@@ -48,8 +48,8 @@ struct AlignmentConfig{
 // which resembles the behaviour of ScatterAlloc
 typedef mallocMC::Allocator<
 mallocMC::CreationPolicies::Scatter<ScatterConfig,ScatterHashParams>,
-  //mallocMC::DistributionPolicies::XMallocSIMD<DistributionConfig>,
-  mallocMC::DistributionPolicies::Noop,
+  mallocMC::DistributionPolicies::XMallocSIMD<DistributionConfig>,
+  //mallocMC::DistributionPolicies::Noop,
   mallocMC::OOMPolicies::ReturnNull,
   mallocMC::ReservePoolPolicies::SimpleCudaMalloc,
   mallocMC::AlignmentPolicies::Shrink<AlignmentConfig>
