@@ -4,6 +4,7 @@
 #include <string>
 #include <fstream>
 #include <algorithm>
+#include <numeric>
 #include <boost/filesystem.hpp>
 #include <map>
 
@@ -43,7 +44,9 @@ class benchmarkRun{
     ss << *std::min_element(allocationClocks.begin(),allocationClocks.end()) << "    ";
     ss << *std::max_element(allocationClocks.begin(),allocationClocks.end()) << "    ";
     ss << *std::min_element(freeClocks.begin(), freeClocks.end()) << "    ";
-    ss << *std::max_element(freeClocks.begin(), freeClocks.end()) << std::endl;
+    ss << *std::max_element(freeClocks.begin(), freeClocks.end()) << "    ";
+    ss << std::accumulate(allocationClocks.begin(),allocationClocks.end(),0)/allocationClocks.size() << "    ";
+    ss << std::accumulate(freeClocks.begin(),freeClocks.end(),0)/freeClocks.size() << std::endl;
     return ss.str();
   }
 
@@ -74,7 +77,7 @@ void writeRunsToFile(std::string path, std::vector<benchmarkRun> runs){
   std::sort(runs.begin(), runs.end());
   std::ofstream ofile;
   ofile.open(path.c_str());
-  ofile << "#threads   minAllocClocks    maxAllocClocks     minFreeClocks    maxFreeClocks\n";
+  ofile << "#threads   minAllocClocks    maxAllocClocks     minFreeClocks    maxFreeClocks    meanAllocClocks    meanFreeClocks\n";
   for(int i=0; i<runs.size(); ++i){
     ofile << runs.at(i).giveLine();
   }
@@ -102,6 +105,10 @@ int main(int argc, char* argv[]){
     runs.push_back(parseSingleFile(p));
   }
 
-  writeRunsToFile("output.dat",runs);
+  std::string outDir = "";
+  if(is_directory(p))
+    outDir = p + "/";
+    
+  writeRunsToFile(outDir+"output.dat",runs);
   return 0;
 }

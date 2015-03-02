@@ -15,17 +15,17 @@
 //configurate the CreationPolicy "Scatter"
 struct ScatterConfig{
   typedef boost::mpl::int_<4096>  pagesize;
-  typedef boost::mpl::int_<8>     accessblocks;
+  typedef boost::mpl::int_<2>     accessblocks;
   typedef boost::mpl::int_<16>    regionsize;
   typedef boost::mpl::int_<2>     wastefactor;
-  typedef boost::mpl::bool_<false> resetfreedpages;
+  typedef boost::mpl::bool_<true> resetfreedpages;
 };
 
 struct ScatterHashParams{
-  typedef boost::mpl::int_<17497> hashingK;
-  typedef boost::mpl::int_<38183> hashingDistMP;
+  typedef boost::mpl::int_<4096*16> hashingK;
+  typedef boost::mpl::int_<4096*32> hashingDistMP;
   typedef boost::mpl::int_<1>     hashingDistWP;
-  typedef boost::mpl::int_<1>     hashingDistWPRel;
+  typedef boost::mpl::int_<4096*64>     hashingDistWPRel;
 };
 struct ScatterHashParamsRene{
   typedef boost::mpl::int_<16*ScatterConfig::pagesize::value> hashingK;

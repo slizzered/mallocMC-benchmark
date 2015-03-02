@@ -97,6 +97,7 @@ endif(Boost_VERSION EQUAL 105500)
 
 #set(WHICH_BENCHMARK "benchmark_1")
 set(WHICH_BENCHMARK "benchmark_2")
+#set(WHICH_BENCHMARK "benchmark_3")
 cuda_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 file(GLOB SRCFILES "${CMAKE_CURRENT_SOURCE_DIR}/src/${WHICH_BENCHMARK}.c*")
